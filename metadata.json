@@ -1,0 +1,6 @@
+{
+  "name": "Hanex & Shumex",
+  "description": "Desktop-style AI companion chat app featuring dual AI agents Hanex and Shumex with adaptive dynamic themes, distinct personalities, separate chat histories, and Gemini intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
