@@ -207,7 +207,10 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
+        const errorData = await response.json().catch((jsonErr) => {
+          console.warn('Failed to parse error JSON from /api/chat/stream response:', jsonErr);
+          return {};
+        });
         throw new Error(errorData.error || `Server responded with ${response.status}`);
       }
 
@@ -219,18 +222,17 @@ export default function App() {
       const decoder = new TextDecoder();
       let accumulatedText = '';
       let streamError = '';
+      let buffer = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunkStr = decoder.decode(value, { stream: true });
-        const lines = chunkStr.split('\n\n');
-
+      const processEventBlock = (block: string) => {
+        const lines = block.split('\n');
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('data: ')) {
+            const jsonStr = trimmed.slice(6).trim();
+            if (!jsonStr) continue;
             try {
-              const data = JSON.parse(line.slice(6));
+              const data = JSON.parse(jsonStr);
               if (data.error) {
                 streamError = data.error;
               } else if (data.text) {
@@ -246,14 +248,95 @@ export default function App() {
                 scrollToBottom('auto');
               }
             } catch (err) {
-              // Ignore partial chunk parse error
+              console.warn('Failed to parse SSE JSON payload:', jsonStr, err);
             }
+          }
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        // Keep the incomplete remainder in the buffer for the next read:
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          if (part.trim()) {
+            processEventBlock(part);
           }
         }
       }
 
+      // Process any trailing complete data in the buffer after stream ends
+      if (buffer.trim()) {
+        processEventBlock(buffer);
+        buffer = '';
+      }
+
       if (streamError) {
         throw new Error(streamError);
+      }
+
+      // If the stream finishes with empty accumulated text and no error, automatically retry once using /api/chat
+      if (!accumulatedText.trim()) {
+        console.warn(
+          'Stream finished with empty text and no error. Retrying once via non-streaming /api/chat...'
+        );
+        try {
+          const fallbackRes = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              agentId: activeAgentId,
+              messages: updatedChat.map((m) => ({
+                role: m.role,
+                content: m.content,
+              })),
+              customKey: settings.apiKey,
+              model: settings.model,
+            }),
+            signal: abortControllerRef.current.signal,
+          });
+
+          if (fallbackRes.ok) {
+            const fallbackData = await fallbackRes.json();
+            if (fallbackData.text && fallbackData.text.trim()) {
+              accumulatedText = fallbackData.text.trim();
+            }
+          } else {
+            const fallbackErrorData = await fallbackRes.json().catch((jsonErr) => {
+              console.warn('Failed to parse fallback error JSON:', jsonErr);
+              return {};
+            });
+            if (fallbackErrorData.error) {
+              streamError = fallbackErrorData.error;
+            }
+          }
+        } catch (fallbackErr: any) {
+          if (fallbackErr.name === 'AbortError') {
+            throw fallbackErr;
+          }
+          console.warn('Fallback /api/chat attempt failed:', fallbackErr);
+        }
+      }
+
+      // If that is also empty, show the message “The model returned an empty response. Try again or switch the model in Settings” and mark the message as an error, not complete.
+      if (!accumulatedText.trim()) {
+        const emptyMsg =
+          streamError ||
+          'The model returned an empty response. Try again or switch the model in Settings';
+        setMessages((prev) => ({
+          ...prev,
+          [activeAgentId]: prev[activeAgentId].map((m) =>
+            m.id === assistantPlaceholderId
+              ? { ...m, content: emptyMsg, status: 'error', error: emptyMsg }
+              : m
+          ),
+        }));
+        return;
       }
 
       // Mark complete

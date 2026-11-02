@@ -38,7 +38,9 @@ function formatErrorMessage(err: any): string {
     if (parsed.error?.message) {
       return parsed.error.message;
     }
-  } catch {}
+  } catch (jsonErr) {
+    console.warn('formatErrorMessage: Failed to parse error JSON payload:', jsonErr);
+  }
   return message;
 }
 
@@ -166,14 +168,60 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
       systemInstruction
     );
 
+    let chunkCount = 0;
+    let totalTextLength = 0;
+    let lastFinishReason: string | undefined;
+    let blockReason: string | undefined;
+
     for await (const chunk of responseStream) {
+      chunkCount++;
       const textChunk = chunk.text;
+      const candidate = chunk.candidates?.[0];
+      if (candidate?.finishReason) {
+        lastFinishReason = candidate.finishReason;
+      }
+      if (chunk.promptFeedback?.blockReason) {
+        blockReason = chunk.promptFeedback.blockReason;
+      }
+
+      console.log(
+        `[Stream Chunk #${chunkCount}] TextLen: ${textChunk ? textChunk.length : 0}, finishReason: ${candidate?.finishReason || 'none'}, blockReason: ${chunk.promptFeedback?.blockReason || 'none'}`
+      );
+
       if (textChunk) {
+        totalTextLength += textChunk.length;
         res.write(`data: ${JSON.stringify({ text: textChunk })}\n\n`);
       }
     }
 
-    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    console.log(
+      `[Stream Complete] Total Chunks: ${chunkCount}, TotalTextLength: ${totalTextLength}, lastFinishReason: ${lastFinishReason || 'none'}, blockReason: ${blockReason || 'none'}`
+    );
+
+    if (blockReason) {
+      console.warn(`[Stream Blocked] Response blocked: ${blockReason}`);
+      res.write(
+        `data: ${JSON.stringify({
+          error: `Response was blocked by safety filters (${blockReason}).`,
+        })}\n\n`
+      );
+    } else if (lastFinishReason && lastFinishReason !== 'STOP' && totalTextLength === 0) {
+      console.warn(`[Stream Non-Stop Finish] Reason: ${lastFinishReason}`);
+      res.write(
+        `data: ${JSON.stringify({
+          error: `Response stopped unexpectedly with reason: ${lastFinishReason}.`,
+        })}\n\n`
+      );
+    } else if (totalTextLength === 0) {
+      console.warn('[Stream Empty] Model returned 0 text chunks.');
+      res.write(
+        `data: ${JSON.stringify({
+          error: 'The model returned an empty response. Try again or switch the model in Settings',
+        })}\n\n`
+      );
+    } else {
+      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    }
     res.end();
   } catch (error: any) {
     console.error('Error in streaming chat:', error);
@@ -238,8 +286,34 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       }
     }
 
+    const candidate = response.candidates?.[0];
+    const blockReason = response.promptFeedback?.blockReason;
+    const finishReason = candidate?.finishReason;
+    const textOutput = response.text || '';
+
+    console.log(
+      `[/api/chat Complete] finishReason: ${finishReason || 'none'}, blockReason: ${blockReason || 'none'}, textLen: ${textOutput.length}`
+    );
+
+    if (blockReason) {
+      res.status(400).json({
+        error: `Response was blocked by safety filters (${blockReason}).`,
+      });
+      return;
+    }
+
+    if (!textOutput.trim()) {
+      res.status(500).json({
+        error:
+          finishReason && finishReason !== 'STOP'
+            ? `Response stopped with reason: ${finishReason}`
+            : 'The model returned an empty response. Try again or switch the model in Settings',
+      });
+      return;
+    }
+
     res.json({
-      text: response.text || '',
+      text: textOutput,
     });
   } catch (error: any) {
     console.error('Error in chat:', error);
