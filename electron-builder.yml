@@ -1,0 +1,24 @@
+appId: com.itsmehanan.hanexshumex
+productName: Hanex & Shumex
+directories:
+  output: release
+files:
+  - electron/main.cjs
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+  - '!**/.env*'
+  # The server bundle contains its runtime dependencies; Vite is development-only.
+  - '!node_modules/**'
+asar: true
+npmRebuild: false
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: Hanex-Shumex-Setup-${version}.${ext}

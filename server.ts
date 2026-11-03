@@ -1,17 +1,20 @@
 import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
+import type { Server } from 'http';
 import { GoogleGenAI } from '@google/genai';
-
-dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+// Electron supplies its app/resource directory; the web server keeps using its own directory.
+const projectRoot = path.resolve(process.env.MEXAI_APP_ROOT || __dirname);
+dotenv.config({ path: path.join(projectRoot, '.env') });
 
 const app = express();
-// AI Studio dev server runs on port 3000. In production containers, use process.env.PORT.
-const PORT = process.env.NODE_ENV === 'production' ? (Number(process.env.PORT) || 8080) : 3000;
+// Preserve the web defaults; Electron supplies a fixed loopback port and host.
+const PORT = Number(process.env.MEXAI_PORT) || (process.env.NODE_ENV === 'production' ? (Number(process.env.PORT) || 8080) : 3000);
+const HOST = process.env.MEXAI_HOST || '0.0.0.0';
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -739,10 +742,12 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   }
 });
 
-async function startServer() {
+export async function startServer() {
+  let vite;
   if (process.env.NODE_ENV !== 'production') {
     const { createServer } = await import('vite');
-    const vite = await createServer({
+    vite = await createServer({
+      root: projectRoot,
       server: {
         middlewareMode: true,
         hmr: false,
@@ -751,16 +756,34 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = path.resolve(projectRoot, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on http://0.0.0.0:${PORT}`);
-  });
+  try {
+    const server = await new Promise<Server>((resolve, reject) => {
+      const httpServer = app.listen(PORT, HOST);
+      httpServer.once('error', reject);
+      httpServer.once('listening', () => {
+        httpServer.off('error', reject);
+        console.log(`Server listening on http://${HOST}:${PORT}`);
+        resolve(httpServer);
+      });
+    });
+    return { server, vite };
+  } catch (error) {
+    await vite?.close();
+    throw error;
+  }
 }
 
-startServer();
+// Keep the CLI entry point without starting a listener when this module is imported.
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  startServer().catch((error) => {
+    console.error('Failed to start server:', error);
+    process.exitCode = 1;
+  });
+}
