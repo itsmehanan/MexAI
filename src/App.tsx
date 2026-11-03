@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import confetti from 'canvas-confetti';
 import {
   Sparkles,
@@ -17,10 +17,20 @@ import {
   Sliders,
   ChevronDown,
   Info,
+  Cpu,
 } from 'lucide-react';
 
-import { AgentId, ChatMessage, AppSettings } from './types';
+import {
+  AgentId,
+  ChatMessage,
+  AppSettings,
+  ProviderId,
+  ProviderSettings,
+  AgentModelSelection,
+  ModelOption,
+} from './types';
 import { AGENTS, INITIAL_MESSAGES } from './data/agents';
+import { PROVIDERS_META, DEFAULT_PROVIDER_MODELS } from './data/models';
 import { soundFX, speakText, stopSpeaking } from './utils/audio';
 import { Sidebar } from './components/Sidebar';
 import { DesktopHeader } from './components/DesktopHeader';
@@ -31,12 +41,23 @@ import { SettingsModal } from './components/SettingsModal';
 import { QuickSwitcherModal } from './components/QuickSwitcherModal';
 import { Avatar } from './components/Avatar';
 
-const STORAGE_KEY_SETTINGS = 'hanex_shumex_settings_v1';
-const STORAGE_KEY_MESSAGES = 'hanex_shumex_messages_v1';
+const STORAGE_KEY_SETTINGS = 'hanex_shumex_settings_v2';
+const STORAGE_KEY_MESSAGES = 'hanex_shumex_messages_v2';
+const STORAGE_KEY_AGENT_MODELS = 'hanex_shumex_agent_models_v2';
+
+const DEFAULT_PROVIDERS: Record<ProviderId, ProviderSettings> = {
+  gemini: { id: 'gemini', enabled: true, apiKey: '' },
+  openai: { id: 'openai', enabled: false, apiKey: '' },
+  anthropic: { id: 'anthropic', enabled: false, apiKey: '' },
+  openrouter: { id: 'openrouter', enabled: false, apiKey: '' },
+  ollama: { id: 'ollama', enabled: false, apiKey: '', baseUrl: 'http://localhost:11434' },
+};
 
 const DEFAULT_SETTINGS: AppSettings = {
   apiKey: '',
   model: 'gemini-3.8-flash',
+  providers: DEFAULT_PROVIDERS,
+  openRouterFreeOnly: true,
   soundEffects: true,
   speechSynthesis: false,
   voiceSpeed: 1.0,
@@ -44,9 +65,31 @@ const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 'normal',
 };
 
+const DEFAULT_AGENT_MODELS: Record<AgentId, AgentModelSelection> = {
+  hanex: { provider: 'gemini', model: 'gemini-3.8-flash' },
+  shumex: { provider: 'gemini', model: 'gemini-3.8-flash' },
+};
+
 export default function App() {
   // Active Agent state
   const [activeAgentId, setActiveAgentId] = useState<AgentId>('hanex');
+
+  // Per-Agent Model Memory: Hanex and Shumex each remember their chosen model
+  const [agentModels, setAgentModels] = useState<Record<AgentId, AgentModelSelection>>(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY_AGENT_MODELS);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        return {
+          hanex: parsed.hanex || DEFAULT_AGENT_MODELS.hanex,
+          shumex: parsed.shumex || DEFAULT_AGENT_MODELS.shumex,
+        };
+      }
+    } catch (e) {
+      console.warn('Failed to load agent models from localStorage:', e);
+    }
+    return DEFAULT_AGENT_MODELS;
+  });
 
   // Chat messages for each agent separately
   const [messages, setMessages] = useState<Record<AgentId, ChatMessage[]>>(() => {
@@ -60,24 +103,39 @@ export default function App() {
         };
       }
     } catch (e) {
-      console.error('Failed to load chat history from localStorage', e);
+      console.warn('Failed to load chat history from localStorage:', e);
     }
     return INITIAL_MESSAGES;
   });
 
-  // Settings state
+  // Settings state (multi-provider keys, toggles, audio)
   const [settings, setSettings] = useState<AppSettings>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY_SETTINGS);
-      if (stored) return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        return {
+          ...DEFAULT_SETTINGS,
+          ...parsed,
+          providers: {
+            ...DEFAULT_PROVIDERS,
+            ...(parsed.providers || {}),
+          },
+        };
+      }
     } catch (e) {
-      console.error('Failed to load settings from localStorage', e);
+      console.warn('Failed to load settings from localStorage:', e);
     }
     return DEFAULT_SETTINGS;
   });
 
-  // Backend environment status
+  // Backend status & available environment keys
   const [hasEnvKey, setHasEnvKey] = useState(false);
+  const [envKeys, setEnvKeys] = useState<Record<string, boolean>>({});
+
+  // Ollama dynamically fetched models
+  const [ollamaModels, setOllamaModels] = useState<ModelOption[]>([]);
+  const [isFetchingOllama, setIsFetchingOllama] = useState(false);
 
   // Modals state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -93,27 +151,64 @@ export default function App() {
   const activeAgent = AGENTS[activeAgentId];
   const activeMessages = messages[activeAgentId] || [];
   const isHanex = activeAgentId === 'hanex';
+  const activeModelSelection = agentModels[activeAgentId] || DEFAULT_AGENT_MODELS[activeAgentId];
 
-  // Check backend status on load
+  // Fetch Ollama models from backend
+  const fetchOllamaModels = useCallback(async (customBaseUrl?: string) => {
+    setIsFetchingOllama(true);
+    const host = customBaseUrl || settings.providers.ollama?.baseUrl || 'http://localhost:11434';
+    try {
+      const res = await fetch('/api/providers/ollama/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl: host }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.models)) {
+          setOllamaModels(data.models);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not auto-fetch Ollama models:', err);
+    } finally {
+      setIsFetchingOllama(false);
+    }
+  }, [settings.providers.ollama?.baseUrl]);
+
+  // Check backend status on mount
   useEffect(() => {
     fetch('/api/status')
       .then((res) => res.json())
       .then((data) => {
-        if (data.hasEnvKey) {
-          setHasEnvKey(true);
-        }
+        if (data.hasEnvKey) setHasEnvKey(true);
+        if (data.envKeys) setEnvKeys(data.envKeys);
       })
       .catch((err) => {
         console.warn('Backend status check error:', err);
       });
-  }, []);
 
-  // Save messages to localStorage whenever they change
+    // If Ollama is enabled, scan for models
+    if (settings.providers.ollama?.enabled) {
+      fetchOllamaModels();
+    }
+  }, [fetchOllamaModels, settings.providers.ollama?.enabled]);
+
+  // Save agent models to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_AGENT_MODELS, JSON.stringify(agentModels));
+    } catch (e) {
+      console.warn('Failed to save agent models', e);
+    }
+  }, [agentModels]);
+
+  // Save messages to localStorage
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(messages));
     } catch (e) {
-      console.error('Failed to save chat history', e);
+      console.warn('Failed to save chat history', e);
     }
   }, [messages]);
 
@@ -122,11 +217,11 @@ export default function App() {
     try {
       localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
     } catch (e) {
-      console.error('Failed to save settings', e);
+      console.warn('Failed to save settings', e);
     }
   }, [settings]);
 
-  // Scroll to bottom when messages change or streaming updates
+  // Scroll to bottom helper
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     if (chatBottomRef.current) {
       chatBottomRef.current.scrollIntoView({ behavior });
@@ -137,7 +232,7 @@ export default function App() {
     scrollToBottom('smooth');
   }, [activeMessages.length, isGenerating]);
 
-  // Handle agent switch
+  // Switch agent
   const handleSelectAgent = (agentId: AgentId) => {
     if (agentId === activeAgentId) return;
     if (settings.soundEffects) {
@@ -147,12 +242,20 @@ export default function App() {
     setActiveAgentId(agentId);
   };
 
+  // Update selected model for currently active agent
+  const handleSelectModelForActiveAgent = (selection: AgentModelSelection) => {
+    setAgentModels((prev) => ({
+      ...prev,
+      [activeAgentId]: selection,
+    }));
+  };
+
   // Update settings handler
   const handleSaveSettings = (newSettings: Partial<AppSettings>) => {
     setSettings((prev) => ({ ...prev, ...newSettings }));
   };
 
-  // Send message handler with streaming Gemini
+  // Send message handler with multi-provider streaming and fallback retry
   const handleSendMessage = async (text: string) => {
     if (!text.trim() || isGenerating) return;
 
@@ -160,12 +263,21 @@ export default function App() {
       soundFX.playSend();
     }
 
+    const currentModelConfig = agentModels[activeAgentId] || DEFAULT_AGENT_MODELS[activeAgentId];
+    const providerConfig = settings.providers[currentModelConfig.provider] || {
+      id: currentModelConfig.provider,
+      enabled: true,
+      apiKey: '',
+    };
+
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
       content: text,
       timestamp: Date.now(),
       agentId: activeAgentId,
+      provider: currentModelConfig.provider,
+      model: currentModelConfig.model,
       status: 'complete',
     };
 
@@ -176,10 +288,11 @@ export default function App() {
       content: '',
       timestamp: Date.now(),
       agentId: activeAgentId,
+      provider: currentModelConfig.provider,
+      model: currentModelConfig.model,
       status: 'streaming',
     };
 
-    // Append to current agent's chat history
     const updatedChat = [...activeMessages, userMessage];
     setMessages((prev) => ({
       ...prev,
@@ -189,26 +302,31 @@ export default function App() {
     setIsGenerating(true);
     abortControllerRef.current = new AbortController();
 
+    const requestPayload = {
+      agentId: activeAgentId,
+      provider: currentModelConfig.provider,
+      model: currentModelConfig.model,
+      messages: updatedChat.map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+      providerConfig: {
+        apiKey: providerConfig.apiKey,
+        baseUrl: providerConfig.baseUrl,
+      },
+    };
+
     try {
-      // Call streaming backend
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agentId: activeAgentId,
-          messages: updatedChat.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-          customKey: settings.apiKey,
-          model: settings.model,
-        }),
+        body: JSON.stringify(requestPayload),
         signal: abortControllerRef.current.signal,
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch((jsonErr) => {
-          console.warn('Failed to parse error JSON from /api/chat/stream response:', jsonErr);
+          console.warn('Failed to parse error JSON from /api/chat/stream:', jsonErr);
           return {};
         });
         throw new Error(errorData.error || `Server responded with ${response.status}`);
@@ -260,7 +378,6 @@ export default function App() {
 
         buffer += decoder.decode(value, { stream: true });
         const parts = buffer.split('\n\n');
-        // Keep the incomplete remainder in the buffer for the next read:
         buffer = parts.pop() || '';
 
         for (const part of parts) {
@@ -270,7 +387,6 @@ export default function App() {
         }
       }
 
-      // Process any trailing complete data in the buffer after stream ends
       if (buffer.trim()) {
         processEventBlock(buffer);
         buffer = '';
@@ -280,7 +396,7 @@ export default function App() {
         throw new Error(streamError);
       }
 
-      // If the stream finishes with empty accumulated text and no error, automatically retry once using /api/chat
+      // Retry once via non-streaming /api/chat if stream returned empty text and no error
       if (!accumulatedText.trim()) {
         console.warn(
           'Stream finished with empty text and no error. Retrying once via non-streaming /api/chat...'
@@ -289,15 +405,7 @@ export default function App() {
           const fallbackRes = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              agentId: activeAgentId,
-              messages: updatedChat.map((m) => ({
-                role: m.role,
-                content: m.content,
-              })),
-              customKey: settings.apiKey,
-              model: settings.model,
-            }),
+            body: JSON.stringify(requestPayload),
             signal: abortControllerRef.current.signal,
           });
 
@@ -316,14 +424,12 @@ export default function App() {
             }
           }
         } catch (fallbackErr: any) {
-          if (fallbackErr.name === 'AbortError') {
-            throw fallbackErr;
-          }
+          if (fallbackErr.name === 'AbortError') throw fallbackErr;
           console.warn('Fallback /api/chat attempt failed:', fallbackErr);
         }
       }
 
-      // If that is also empty, show the message “The model returned an empty response. Try again or switch the model in Settings” and mark the message as an error, not complete.
+      // If still empty or error occurred:
       if (!accumulatedText.trim()) {
         const emptyMsg =
           streamError ||
@@ -353,13 +459,11 @@ export default function App() {
         soundFX.playReceive(activeAgentId);
       }
 
-      // Auto read if speech enabled
       if (settings.speechSynthesis && accumulatedText) {
         speakText(accumulatedText, activeAgentId, settings.voiceSpeed);
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
-        // User stopped generation intentionally
         setMessages((prev) => ({
           ...prev,
           [activeAgentId]: prev[activeAgentId].map((m) =>
@@ -375,7 +479,7 @@ export default function App() {
       } else {
         const errorMsg =
           err?.message ||
-          'Failed to communicate with Gemini. Please check your API key in Settings.';
+          `Failed to communicate with ${PROVIDERS_META[currentModelConfig.provider]?.name || 'provider'}. Check your API key in Settings.`;
         setMessages((prev) => ({
           ...prev,
           [activeAgentId]: prev[activeAgentId].map((m) =>
@@ -408,7 +512,6 @@ export default function App() {
     if (isGenerating || activeMessages.length < 2) return;
     const lastUserMessage = [...activeMessages].reverse().find((m) => m.role === 'user');
     if (lastUserMessage) {
-      // Remove last assistant message
       setMessages((prev) => ({
         ...prev,
         [activeAgentId]: prev[activeAgentId].filter(
@@ -431,7 +534,9 @@ export default function App() {
   const handleExportChat = (agentId: AgentId) => {
     const agent = AGENTS[agentId];
     const chatData = messages[agentId];
+    const assigned = agentModels[agentId];
     let markdown = `# Chat History with ${agent.name} (${agent.roleTitle})\n\n`;
+    markdown += `*Assigned Model: ${assigned?.model || 'default'} (${assigned?.provider || 'gemini'})*\n`;
     markdown += `*Exported on ${new Date().toLocaleString()}*\n\n---\n\n`;
 
     chatData.forEach((m) => {
@@ -457,13 +562,16 @@ export default function App() {
   const handleExportAll = () => {
     const data = {
       exportedAt: new Date().toISOString(),
+      agentModels,
       agents: {
         hanex: {
           profile: AGENTS.hanex,
+          selectedModel: agentModels.hanex,
           messages: messages.hanex,
         },
         shumex: {
           profile: AGENTS.shumex,
+          selectedModel: agentModels.shumex,
           messages: messages.shumex,
         },
       },
@@ -488,10 +596,18 @@ export default function App() {
   const handleResetAllData = () => {
     setMessages(INITIAL_MESSAGES);
     setSettings(DEFAULT_SETTINGS);
+    setAgentModels(DEFAULT_AGENT_MODELS);
     localStorage.removeItem(STORAGE_KEY_MESSAGES);
     localStorage.removeItem(STORAGE_KEY_SETTINGS);
+    localStorage.removeItem(STORAGE_KEY_AGENT_MODELS);
     setIsSettingsOpen(false);
   };
+
+  const currentProviderConfig = settings.providers[activeModelSelection.provider];
+  const isCurrentProviderKeyMissing =
+    activeModelSelection.provider !== 'ollama' &&
+    !currentProviderConfig?.apiKey?.trim() &&
+    !envKeys[activeModelSelection.provider];
 
   return (
     <div
@@ -511,12 +627,21 @@ export default function App() {
         }`}
       />
 
-      {/* Desktop Window Title Header */}
+      {/* Desktop Window Title Header with Multi-Provider Model Dropdown */}
       <DesktopHeader
         activeAgent={activeAgent}
         onSwitchAgent={handleSelectAgent}
         onOpenSettings={() => setIsSettingsOpen(true)}
-        model={settings.model}
+        selectedModel={activeModelSelection}
+        onSelectModel={handleSelectModelForActiveAgent}
+        providers={settings.providers}
+        openRouterFreeOnly={settings.openRouterFreeOnly}
+        onToggleFreeOnly={() =>
+          handleSaveSettings({ openRouterFreeOnly: !settings.openRouterFreeOnly })
+        }
+        ollamaModels={ollamaModels}
+        isFetchingOllama={isFetchingOllama}
+        onRefreshOllama={() => fetchOllamaModels()}
       />
 
       {/* Main Desktop Container: Sidebar + Chat Area */}
@@ -532,8 +657,11 @@ export default function App() {
           onOpenQuickSwitcher={() => setIsQuickSwitcherOpen(true)}
           soundEnabled={settings.soundEffects}
           onToggleSound={() => handleSaveSettings({ soundEffects: !settings.soundEffects })}
-          hasCustomKey={Boolean(settings.apiKey.trim())}
+          hasCustomKey={Boolean(currentProviderConfig?.apiKey?.trim())}
           hasEnvKey={hasEnvKey}
+          activeModelSelection={activeModelSelection}
+          agentModels={agentModels}
+          providers={settings.providers}
         />
 
         {/* Chat Main Area */}
@@ -551,12 +679,15 @@ export default function App() {
               </span>
               <span className="text-slate-600 text-xs">•</span>
               <span className="text-[11px] text-slate-400 hidden sm:inline">
-                {activeAgent.personality}
+                Powered by{' '}
+                <strong className="text-slate-200 font-mono">
+                  {activeModelSelection.model}
+                </strong>{' '}
+                ({PROVIDERS_META[activeModelSelection.provider]?.name || activeModelSelection.provider})
               </span>
             </div>
 
             <div className="flex items-center gap-2">
-              {/* Quick Prompt Ideas Chip */}
               <button
                 onClick={() => {
                   const randomPrompt =
@@ -587,20 +718,20 @@ export default function App() {
             </div>
           </div>
 
-          {/* Missing Key Banner Notice (if neither env nor custom key exists) */}
-          {!hasEnvKey && !settings.apiKey && (
+          {/* Missing Key Banner Notice if currently selected provider lacks a key */}
+          {isCurrentProviderKeyMissing && (
             <div className="mx-4 mt-3 p-3 rounded-2xl bg-amber-950/30 border border-amber-500/30 flex items-center justify-between gap-3 text-xs text-amber-200">
               <div className="flex items-center gap-2">
                 <Info className="w-4 h-4 text-amber-400 flex-shrink-0" />
                 <span>
-                  To chat with {activeAgent.name}, enter your Google Gemini API key in Settings.
+                  {PROVIDERS_META[activeModelSelection.provider]?.name} is selected for {activeAgent.name}, but no API key is configured.
                 </span>
               </div>
               <button
                 onClick={() => setIsSettingsOpen(true)}
                 className="px-3 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-semibold border border-amber-500/30 transition cursor-pointer whitespace-nowrap"
               >
-                Enter Key
+                Add Key in Settings
               </button>
             </div>
           )}
@@ -616,9 +747,13 @@ export default function App() {
                 <h2 className="text-lg font-bold text-white tracking-tight mb-1">
                   Meet {activeAgent.name}
                 </h2>
-                <p className="text-xs text-slate-400 leading-relaxed max-w-md mx-auto mb-4">
+                <p className="text-xs text-slate-400 leading-relaxed max-w-md mx-auto mb-2">
                   {activeAgent.description}
                 </p>
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] font-mono text-slate-300 mb-4">
+                  <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Model: {activeModelSelection.model}</span>
+                </div>
 
                 {/* Prompt Starters Chips */}
                 <div className="flex flex-wrap justify-center gap-2 mt-2">
@@ -678,7 +813,7 @@ export default function App() {
         </main>
       </div>
 
-      {/* Settings Modal */}
+      {/* Settings Modal with Multi-Provider Configuration */}
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
@@ -688,6 +823,10 @@ export default function App() {
         onResetAllData={handleResetAllData}
         onExportAll={handleExportAll}
         hasEnvKey={hasEnvKey}
+        envKeys={envKeys}
+        onRefreshOllama={() => fetchOllamaModels()}
+        isFetchingOllama={isFetchingOllama}
+        ollamaModelsCount={ollamaModels.length}
       />
 
       {/* Quick Switcher / Command Palette (Cmd+K) */}

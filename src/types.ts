@@ -1,17 +1,43 @@
 export type AgentId = 'hanex' | 'shumex';
 
+export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama';
+
+export interface ModelOption {
+  id: string;
+  name: string;
+  provider: ProviderId;
+  isFree?: boolean;
+  badge?: string;
+  description?: string;
+}
+
+export interface ProviderSettings {
+  id: ProviderId;
+  enabled: boolean;
+  apiKey: string;
+  baseUrl?: string; // for Ollama
+  freeOnlyFilter?: boolean; // for OpenRouter
+}
+
+export interface AgentModelSelection {
+  provider: ProviderId;
+  model: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
   agentId: AgentId;
+  provider?: ProviderId;
+  model?: string;
   status?: 'sending' | 'streaming' | 'complete' | 'error';
   error?: string;
 }
 
 export interface AgentTheme {
-  primary: string; // Tailwind color class or hex
+  primary: string;
   primaryHex: string;
   secondaryHex: string;
   accentGradient: string;
@@ -44,8 +70,10 @@ export interface AgentProfile {
 }
 
 export interface AppSettings {
-  apiKey: string;
-  model: string;
+  apiKey: string; // Legacy Gemini fallback key
+  model: string; // Legacy default
+  providers: Record<ProviderId, ProviderSettings>;
+  openRouterFreeOnly: boolean;
   soundEffects: boolean;
   speechSynthesis: boolean;
   voiceSpeed: number;
@@ -56,4 +84,5 @@ export interface AppSettings {
 export interface SystemStatus {
   hasEnvKey: boolean;
   defaultModel: string;
+  envKeys: Record<string, boolean>;
 }

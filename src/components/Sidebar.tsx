@@ -1,7 +1,8 @@
 import React from 'react';
-import { Settings, Trash2, Download, Volume2, VolumeX, Sparkles, MessageSquare, Bot, Search } from 'lucide-react';
-import { AgentId, AgentProfile, ChatMessage } from '../types';
+import { Settings, Trash2, Download, Volume2, VolumeX, Sparkles, MessageSquare, Bot, Search, Cpu } from 'lucide-react';
+import { AgentId, AgentProfile, ChatMessage, AgentModelSelection, ProviderId, ProviderSettings } from '../types';
 import { AGENTS } from '../data/agents';
+import { PROVIDERS_META } from '../data/models';
 import { Avatar } from './Avatar';
 
 interface SidebarProps {
@@ -16,6 +17,9 @@ interface SidebarProps {
   onToggleSound: () => void;
   hasCustomKey: boolean;
   hasEnvKey: boolean;
+  activeModelSelection?: AgentModelSelection;
+  agentModels?: Record<AgentId, AgentModelSelection>;
+  providers?: Record<ProviderId, ProviderSettings>;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -30,9 +34,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleSound,
   hasCustomKey,
   hasEnvKey,
+  activeModelSelection,
+  agentModels,
+  providers,
 }) => {
   const activeAgent = AGENTS[activeAgentId];
   const isHanex = activeAgentId === 'hanex';
+
+  const currentSelection = activeModelSelection || agentModels?.[activeAgentId] || {
+    provider: 'gemini',
+    model: 'gemini-3.8-flash',
+  };
+  const providerMeta = PROVIDERS_META[currentSelection.provider];
+
+  const enabledCount = providers
+    ? Object.values(providers).filter((p) => p.enabled).length
+    : 1;
 
   return (
     <aside className="w-72 md:w-80 flex-shrink-0 h-full flex flex-col bg-[#080d17]/95 border-r border-white/10 select-none relative z-10">
@@ -80,6 +97,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             const isSelected = activeAgentId === id;
             const agentMessages = messages[id] || [];
             const lastMsg = agentMessages[agentMessages.length - 1];
+            const assignedModel = agentModels?.[id] || { provider: 'gemini', model: 'gemini-3.8-flash' };
 
             return (
               <button
@@ -133,9 +151,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       {agent.roleTitle}
                     </div>
 
-                    {/* Last message preview */}
-                    <div className="text-[11px] text-slate-400 truncate">
-                      {lastMsg ? lastMsg.content.slice(0, 45) : agent.personality}
+                    {/* Model assigned to this agent */}
+                    <div className="flex items-center gap-1 text-[10px] font-mono text-slate-400 truncate">
+                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-400/60" />
+                      <span className="truncate">{assignedModel.model}</span>
                     </div>
                   </div>
                 </div>
@@ -162,15 +181,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </span>
           </div>
 
-          <p className="text-xs text-slate-400 leading-relaxed line-clamp-3 mb-3">
+          <p className="text-xs text-slate-400 leading-relaxed line-clamp-2 mb-3">
             {activeAgent.description}
           </p>
 
           <div className="space-y-1.5 pt-2 border-t border-white/5 text-[11px] text-slate-400">
             <div className="flex justify-between items-center">
-              <span>Theme:</span>
-              <span className="capitalize font-semibold text-slate-200">
-                {activeAgent.theme.primary} ({isHanex ? 'Blue' : 'Pink'})
+              <span>Assigned Model:</span>
+              <span className="font-mono text-slate-200 font-medium truncate max-w-[130px]" title={currentSelection.model}>
+                {currentSelection.model}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span>Provider:</span>
+              <span className="font-semibold text-slate-200">
+                {providerMeta?.name || currentSelection.provider}
               </span>
             </div>
             <div className="flex justify-between items-center">
@@ -211,25 +236,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* API Key Status Pill */}
         <button
           onClick={onOpenSettings}
-          className={`w-full flex items-center justify-between p-2 rounded-xl text-xs transition border cursor-pointer ${
-            hasCustomKey
-              ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300 hover:bg-emerald-950/50'
-              : hasEnvKey
-              ? 'bg-blue-950/30 border-blue-500/30 text-blue-300 hover:bg-blue-950/50'
-              : 'bg-amber-950/30 border-amber-500/30 text-amber-300 hover:bg-amber-950/50'
-          }`}
+          className="w-full flex items-center justify-between p-2 rounded-xl text-xs transition border cursor-pointer bg-slate-900/60 border-white/10 hover:bg-slate-900/90 text-slate-300"
         >
           <div className="flex items-center gap-2 truncate">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                hasCustomKey || hasEnvKey ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
-              }`}
-            />
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span className="truncate font-medium">
-              {hasCustomKey ? 'Custom API Key Active' : hasEnvKey ? 'Gemini Key Ready' : 'Add Gemini API Key'}
+              {enabledCount} Provider{enabledCount === 1 ? '' : 's'} Active
             </span>
           </div>
-          <span className="text-[10px] uppercase font-bold text-slate-400">Setup</span>
+          <span className="text-[10px] uppercase font-bold text-cyan-400">Models</span>
         </button>
 
         {/* Quick Toolbar */}

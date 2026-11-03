@@ -8,15 +8,23 @@ import {
   Eye,
   EyeOff,
   ClipboardPaste,
-  ShieldAlert,
   Sparkles,
   Volume2,
   Trash2,
   Download,
   RotateCcw,
   Sliders,
+  Zap,
+  Globe,
+  HardDrive,
+  Cpu,
+  RefreshCw,
+  ExternalLink,
+  ShieldCheck,
+  Filter,
 } from 'lucide-react';
-import { AppSettings, AgentId } from '../types';
+import { AppSettings, AgentId, ProviderId, ProviderSettings } from '../types';
+import { PROVIDERS_META, DEFAULT_PROVIDER_MODELS } from '../data/models';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -27,6 +35,10 @@ interface SettingsModalProps {
   onResetAllData: () => void;
   onExportAll: () => void;
   hasEnvKey: boolean;
+  envKeys?: Record<string, boolean>;
+  onRefreshOllama?: () => void;
+  isFetchingOllama?: boolean;
+  ollamaModelsCount?: number;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -38,83 +50,138 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onResetAllData,
   onExportAll,
   hasEnvKey,
+  envKeys = {},
+  onRefreshOllama,
+  isFetchingOllama = false,
+  ollamaModelsCount = 0,
 }) => {
-  const [apiKeyInput, setApiKeyInput] = useState(settings.apiKey);
-  const [showKey, setShowKey] = useState(false);
-  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
-  const [testMessage, setTestMessage] = useState('');
-  const [activeTab, setActiveTab] = useState<'api' | 'voice' | 'general' | 'data'>('api');
+  const [activeTab, setActiveTab] = useState<'models' | 'voice' | 'general' | 'data'>('models');
+  const [showKeys, setShowKeys] = useState<Record<ProviderId, boolean>>({
+    gemini: false,
+    openai: false,
+    anthropic: false,
+    openrouter: false,
+    ollama: false,
+  });
+
+  const [testStates, setTestStates] = useState<
+    Record<ProviderId, { status: 'idle' | 'testing' | 'success' | 'error'; message: string }>
+  >({
+    gemini: { status: 'idle', message: '' },
+    openai: { status: 'idle', message: '' },
+    anthropic: { status: 'idle', message: '' },
+    openrouter: { status: 'idle', message: '' },
+    ollama: { status: 'idle', message: '' },
+  });
 
   if (!isOpen) return null;
 
-  const handlePasteKey = async () => {
+  const toggleShowKey = (p: ProviderId) => {
+    setShowKeys((prev) => ({ ...prev, [p]: !prev[p] }));
+  };
+
+  const handleUpdateProvider = (id: ProviderId, updates: Partial<ProviderSettings>) => {
+    const current = settings.providers[id] || {
+      id,
+      enabled: id === 'gemini',
+      apiKey: '',
+      baseUrl: id === 'ollama' ? 'http://localhost:11434' : undefined,
+    };
+    const updatedProviders = {
+      ...settings.providers,
+      [id]: { ...current, ...updates },
+    };
+    onSaveSettings({ providers: updatedProviders });
+  };
+
+  const handlePasteKey = async (id: ProviderId) => {
     try {
       const text = await navigator.clipboard.readText();
       if (text) {
-        setApiKeyInput(text.trim());
+        if (id === 'ollama') {
+          handleUpdateProvider(id, { baseUrl: text.trim() });
+        } else {
+          handleUpdateProvider(id, { apiKey: text.trim() });
+        }
       }
     } catch {
       // Clipboard denied
     }
   };
 
-  const handleTestKey = async () => {
-    setTestStatus('testing');
-    setTestMessage('Validating connection to Gemini API...');
+  const handleTestConnection = async (id: ProviderId) => {
+    const prov = settings.providers[id] || { id, enabled: true, apiKey: '' };
+    setTestStates((prev) => ({
+      ...prev,
+      [id]: { status: 'testing', message: `Validating connection to ${PROVIDERS_META[id].name}...` },
+    }));
+
     try {
-      const res = await fetch('/api/validate-key', {
+      const res = await fetch('/api/providers/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: apiKeyInput.trim() }),
+        body: JSON.stringify({
+          provider: id,
+          apiKey: prov.apiKey,
+          baseUrl: prov.baseUrl || 'http://localhost:11434',
+        }),
       });
       const data = await res.json();
       if (res.ok && data.valid) {
-        setTestStatus('success');
-        setTestMessage('API Key is valid and connected to Gemini 3.8 Flash!');
-        // Automatically save if valid
-        onSaveSettings({ apiKey: apiKeyInput.trim() });
+        setTestStates((prev) => ({
+          ...prev,
+          [id]: { status: 'success', message: data.reply || 'Connection verified successfully!' },
+        }));
       } else {
-        setTestStatus('error');
-        setTestMessage(data.error || 'Failed to authenticate with Gemini API.');
+        setTestStates((prev) => ({
+          ...prev,
+          [id]: { status: 'error', message: data.error || 'Failed to authenticate connection.' },
+        }));
       }
     } catch (err: any) {
-      setTestStatus('error');
-      setTestMessage(err?.message || 'Network error while testing API key.');
+      setTestStates((prev) => ({
+        ...prev,
+        [id]: { status: 'error', message: err?.message || 'Network error while testing connection.' },
+      }));
     }
   };
 
-  const handleSaveKey = () => {
-    onSaveSettings({ apiKey: apiKeyInput.trim() });
-    setTestStatus('success');
-    setTestMessage('Key saved locally.');
+  const getProviderIcon = (id: ProviderId) => {
+    switch (id) {
+      case 'gemini':
+        return <Zap className="w-4 h-4 text-sky-400" />;
+      case 'openai':
+        return <Sparkles className="w-4 h-4 text-emerald-400" />;
+      case 'anthropic':
+        return <Cpu className="w-4 h-4 text-amber-400" />;
+      case 'openrouter':
+        return <Globe className="w-4 h-4 text-purple-400" />;
+      case 'ollama':
+        return <HardDrive className="w-4 h-4 text-orange-400" />;
+    }
   };
 
-  const handleClearKey = () => {
-    setApiKeyInput('');
-    onSaveSettings({ apiKey: '' });
-    setTestStatus('idle');
-    setTestMessage('');
-  };
+  const providerList: ProviderId[] = ['gemini', 'openai', 'anthropic', 'openrouter', 'ollama'];
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md">
         <motion.div
           initial={{ opacity: 0, scale: 0.95, y: 15 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 15 }}
           transition={{ duration: 0.2 }}
-          className="w-full max-w-xl bg-[#0c1220] border border-white/15 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+          className="w-full max-w-2xl bg-[#0c1220] border border-white/15 rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
         >
           {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-[#080d17]/80">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-[#080d17]/90">
             <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-rose-500 text-white shadow-md">
+              <div className="p-2 rounded-xl bg-gradient-to-tr from-cyan-500 via-purple-500 to-rose-500 text-white shadow-md">
                 <Sliders className="w-4 h-4" />
               </div>
               <div>
                 <h2 className="text-base font-bold text-white tracking-tight">App Settings</h2>
-                <p className="text-xs text-slate-400">Configure Gemini API key, agents, voice, and data</p>
+                <p className="text-xs text-slate-400">Configure AI Model Providers, Voice, and Preferences</p>
               </div>
             </div>
             <button
@@ -125,12 +192,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
           </div>
 
-          {/* Nav Tabs */}
+          {/* Navigation Tabs */}
           <div className="flex items-center px-6 pt-3 border-b border-white/10 bg-slate-900/30 gap-2">
             {[
-              { id: 'api', label: 'Gemini API Key', icon: Key },
+              { id: 'models', label: 'Models & Providers', icon: Cpu },
               { id: 'voice', label: 'Audio & Speech', icon: Volume2 },
-              { id: 'general', label: 'Models & Layout', icon: Sparkles },
+              { id: 'general', label: 'Preferences', icon: Sparkles },
               { id: 'data', label: 'Data & Backup', icon: Trash2 },
             ].map((tab) => {
               const Icon = tab.icon;
@@ -139,7 +206,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id as any)}
-                  className={`flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-t-xl transition cursor-pointer border-b-2 ${
+                  className={`flex items-center gap-2 px-3.5 py-2.5 text-xs font-semibold rounded-t-xl transition cursor-pointer border-b-2 ${
                     isActive
                       ? 'border-cyan-400 text-cyan-300 bg-white/5'
                       : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -152,126 +219,220 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             })}
           </div>
 
-          {/* Modal Body */}
+          {/* Body Content */}
           <div className="p-6 overflow-y-auto space-y-6 flex-1 text-slate-200">
-            {/* TAB 1: API KEY */}
-            {activeTab === 'api' && (
+            {/* TAB 1: MODELS & PROVIDERS */}
+            {activeTab === 'models' && (
               <div className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 mb-1.5">
-                    Paste Your Gemini API Key
-                  </label>
-                  <p className="text-xs text-slate-400 mb-3">
-                    Paste your personal Google Gemini API key below. Requests will be securely routed through the desktop server backend.
-                  </p>
-
-                  <div className="relative">
-                    <input
-                      type={showKey ? 'text' : 'password'}
-                      value={apiKeyInput}
-                      onChange={(e) => {
-                        setApiKeyInput(e.target.value);
-                        setTestStatus('idle');
-                      }}
-                      placeholder="AIzaSy..."
-                      className="w-full bg-[#111928] border border-white/15 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 rounded-xl px-4 py-2.5 text-sm text-white font-mono placeholder:text-slate-600 focus:outline-none transition"
-                    />
-                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setShowKey(!showKey)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
-                        title={showKey ? 'Hide key' : 'Show key'}
-                      >
-                        {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handlePasteKey}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
-                        title="Paste from clipboard"
-                      >
-                        <ClipboardPaste className="w-4 h-4" />
-                      </button>
-                    </div>
+                <div className="flex items-center justify-between pb-1 border-b border-white/5">
+                  <div>
+                    <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                      Connected AI Providers
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Enable providers, paste keys, and test connections. Keys remain securely on your device.
+                    </p>
                   </div>
-                </div>
 
-                {/* Status message */}
-                {testStatus !== 'idle' && (
-                  <div
-                    className={`p-3 rounded-xl border flex items-start gap-2.5 text-xs ${
-                      testStatus === 'success'
-                        ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
-                        : testStatus === 'error'
-                        ? 'bg-rose-950/40 border-rose-500/40 text-rose-300'
-                        : 'bg-blue-950/40 border-blue-500/40 text-blue-300'
-                    }`}
-                  >
-                    {testStatus === 'success' ? (
-                      <Check className="w-4 h-4 mt-0.5 flex-shrink-0 text-emerald-400" />
-                    ) : testStatus === 'error' ? (
-                      <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-rose-400" />
-                    ) : (
-                      <div className="w-4 h-4 mt-0.5 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin flex-shrink-0" />
-                    )}
-                    <span className="leading-relaxed">{testMessage}</span>
-                  </div>
-                )}
-
-                {/* Buttons for testing & saving */}
-                <div className="flex items-center gap-2 pt-2">
-                  <button
-                    onClick={handleTestKey}
-                    disabled={testStatus === 'testing' || (!apiKeyInput && !hasEnvKey)}
-                    className="flex-1 py-2 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-white font-medium text-xs transition border border-white/15 disabled:opacity-40 cursor-pointer text-center"
-                  >
-                    {testStatus === 'testing' ? 'Testing Connection...' : 'Test & Validate Key'}
-                  </button>
-
-                  <button
-                    onClick={handleSaveKey}
-                    className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-semibold text-xs shadow-md shadow-cyan-950/40 transition cursor-pointer text-center"
-                  >
-                    Save API Key
-                  </button>
-
-                  {apiKeyInput && (
+                  {settings.providers.openrouter?.enabled && (
                     <button
-                      onClick={handleClearKey}
-                      className="py-2 px-3 rounded-xl text-rose-400 hover:bg-rose-500/10 border border-rose-500/20 text-xs transition cursor-pointer"
-                      title="Clear custom key"
+                      onClick={() =>
+                        onSaveSettings({ openRouterFreeOnly: !settings.openRouterFreeOnly })
+                      }
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition cursor-pointer ${
+                        settings.openRouterFreeOnly
+                          ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                          : 'bg-white/5 text-slate-400 border-white/10 hover:text-white'
+                      }`}
+                      title="Filter OpenRouter models to free tier only"
                     >
-                      Remove
+                      <Filter className="w-3 h-3" />
+                      <span>Free Models Only</span>
+                      {settings.openRouterFreeOnly && <Check className="w-3 h-3 text-purple-400" />}
                     </button>
                   )}
                 </div>
 
-                {/* Key Status Pill */}
-                <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/5 space-y-2">
-                  <div className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-                    <span>Key Source</span>
-                    {apiKeyInput ? (
-                      <span className="text-[11px] font-mono text-emerald-400 bg-emerald-500/15 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                        Custom User Key
-                      </span>
-                    ) : hasEnvKey ? (
-                      <span className="text-[11px] font-mono text-cyan-400 bg-cyan-500/15 px-2 py-0.5 rounded-full border border-cyan-500/30">
-                        Built-in AI Studio Key
-                      </span>
-                    ) : (
-                      <span className="text-[11px] font-mono text-amber-400 bg-amber-500/15 px-2 py-0.5 rounded-full border border-amber-500/30">
-                        No Key Set
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-normal">
-                    {apiKeyInput
-                      ? 'Your custom key is stored safely in your browser localStorage and forwarded server-side for Gemini calls.'
-                      : hasEnvKey
-                      ? 'The app is using the pre-configured environment Gemini API key. You can override it anytime by pasting your own key above.'
-                      : 'To talk to Hanex & Shumex, paste an API key from Google AI Studio (aistudio.google.com).'}
-                  </p>
+                <div className="space-y-3">
+                  {providerList.map((id) => {
+                    const meta = PROVIDERS_META[id];
+                    const provConfig = settings.providers[id] || {
+                      id,
+                      enabled: id === 'gemini',
+                      apiKey: '',
+                      baseUrl: id === 'ollama' ? 'http://localhost:11434' : undefined,
+                    };
+                    const isEnabled = provConfig.enabled;
+                    const test = testStates[id];
+                    const hasEnv = Boolean(envKeys[id] || (id === 'gemini' && hasEnvKey));
+                    const isOllama = id === 'ollama';
+
+                    return (
+                      <div
+                        key={id}
+                        className={`rounded-2xl border transition-all duration-200 p-4 ${
+                          isEnabled
+                            ? 'bg-slate-900/70 border-white/15 shadow-lg'
+                            : 'bg-white/[0.01] border-white/5 opacity-60'
+                        }`}
+                      >
+                        {/* Provider Header with On/Off Switch */}
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-2.5">
+                            <div className="p-2 rounded-xl bg-white/5 border border-white/10">
+                              {getProviderIcon(id)}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-sm text-white">{meta.name}</span>
+                                {hasEnv && (
+                                  <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                    Env Key Available
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-400">{meta.tagline}</p>
+                            </div>
+                          </div>
+
+                          {/* Toggle Switch */}
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-slate-400 font-mono">
+                              {isEnabled ? 'Enabled' : 'Disabled'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateProvider(id, { enabled: !isEnabled })}
+                              className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer ${
+                                isEnabled ? 'bg-cyan-500' : 'bg-slate-700'
+                              }`}
+                            >
+                              <span
+                                className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                                  isEnabled ? 'left-6' : 'left-1'
+                                }`}
+                              />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Input & Testing Controls when Enabled */}
+                        {isEnabled && (
+                          <div className="space-y-3 pt-2 border-t border-white/5">
+                            <div>
+                              <div className="flex items-center justify-between mb-1.5">
+                                <label className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
+                                  {isOllama ? 'Ollama Server URL' : `${meta.name} API Key`}
+                                </label>
+                                <span className="text-[10px] text-slate-500">{meta.keyHelp}</span>
+                              </div>
+
+                              <div className="relative">
+                                <input
+                                  type={isOllama || showKeys[id] ? 'text' : 'password'}
+                                  value={isOllama ? provConfig.baseUrl || 'http://localhost:11434' : provConfig.apiKey || ''}
+                                  onChange={(e) => {
+                                    if (isOllama) {
+                                      handleUpdateProvider(id, { baseUrl: e.target.value });
+                                    } else {
+                                      handleUpdateProvider(id, { apiKey: e.target.value });
+                                    }
+                                    setTestStates((prev) => ({
+                                      ...prev,
+                                      [id]: { status: 'idle', message: '' },
+                                    }));
+                                  }}
+                                  placeholder={meta.keyPlaceholder}
+                                  className="w-full bg-[#0a0f1c] border border-white/15 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 rounded-xl px-3.5 py-2 text-xs font-mono text-white placeholder:text-slate-600 focus:outline-none transition"
+                                />
+
+                                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                                  {!isOllama && (
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleShowKey(id)}
+                                      className="p-1 text-slate-400 hover:text-white transition cursor-pointer"
+                                      title={showKeys[id] ? 'Hide' : 'Show'}
+                                    >
+                                      {showKeys[id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePasteKey(id)}
+                                    className="p-1 text-slate-400 hover:text-white transition cursor-pointer"
+                                    title="Paste from clipboard"
+                                  >
+                                    <ClipboardPaste className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Test Results Banner */}
+                            {test.status !== 'idle' && (
+                              <div
+                                className={`p-2.5 rounded-xl border flex items-start gap-2 text-xs ${
+                                  test.status === 'success'
+                                    ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                                    : test.status === 'error'
+                                    ? 'bg-rose-950/40 border-rose-500/40 text-rose-300'
+                                    : 'bg-blue-950/40 border-blue-500/40 text-blue-300'
+                                }`}
+                              >
+                                {test.status === 'success' ? (
+                                  <Check className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-emerald-400" />
+                                ) : test.status === 'error' ? (
+                                  <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-rose-400" />
+                                ) : (
+                                  <div className="w-3.5 h-3.5 mt-0.5 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin flex-shrink-0" />
+                                )}
+                                <span className="leading-tight">{test.message}</span>
+                              </div>
+                            )}
+
+                            {/* Actions: Test Connection + Ollama Fetch */}
+                            <div className="flex items-center justify-between gap-2 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => handleTestConnection(id)}
+                                disabled={test.status === 'testing'}
+                                className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-medium text-xs border border-white/10 transition cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                              >
+                                {test.status === 'testing' ? (
+                                  <>
+                                    <div className="w-3 h-3 rounded-full border border-white border-t-transparent animate-spin" />
+                                    <span>Testing...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
+                                    <span>Test Connection</span>
+                                  </>
+                                )}
+                              </button>
+
+                              {isOllama && onRefreshOllama && (
+                                <button
+                                  type="button"
+                                  onClick={onRefreshOllama}
+                                  disabled={isFetchingOllama}
+                                  className="px-3 py-1.5 rounded-xl bg-orange-500/10 hover:bg-orange-500/20 text-orange-300 font-medium text-xs border border-orange-500/20 transition cursor-pointer flex items-center gap-1.5"
+                                >
+                                  <RefreshCw className={`w-3 h-3 ${isFetchingOllama ? 'animate-spin' : ''}`} />
+                                  <span>
+                                    {isFetchingOllama
+                                      ? 'Scanning...'
+                                      : `Fetch Installed Models (${ollamaModelsCount})`}
+                                  </span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -301,7 +462,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.03] border border-white/5">
                   <div>
                     <h4 className="text-sm font-semibold text-white">Text-to-Speech (TTS)</h4>
-                    <p className="text-xs text-slate-400">Enable voice audio playback for both Hanex and Shumex</p>
+                    <p className="text-xs text-slate-400">Enable synthesized voice audio playback for Hanex and Shumex</p>
                   </div>
                   <button
                     onClick={() => onSaveSettings({ speechSynthesis: !settings.speechSynthesis })}
@@ -346,59 +507,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             )}
 
-            {/* TAB 3: GENERAL & MODELS */}
+            {/* TAB 3: GENERAL PREFERENCES */}
             {activeTab === 'general' && (
               <div className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 mb-2">
-                    Default Gemini Model
-                  </label>
-                  <div className="space-y-2">
-                    {[
-                      {
-                        id: 'gemini-3.8-flash',
-                        name: 'Gemini 3.8 Flash',
-                        badge: 'Recommended',
-                        desc: 'State-of-the-art fast intelligence, balanced thinking, ideal for dual agents.',
-                      },
-                      {
-                        id: 'gemini-3.1-flash-lite',
-                        name: 'Gemini 3.1 Flash Lite',
-                        badge: 'Ultra Fast',
-                        desc: 'Extremely lightweight and low-latency for rapid conversational turns.',
-                      },
-                      {
-                        id: 'gemini-flash-latest',
-                        name: 'Gemini Flash Latest',
-                        badge: 'Latest Release',
-                        desc: 'General purpose fast flagship model.',
-                      },
-                    ].map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => onSaveSettings({ model: m.id })}
-                        className={`w-full p-3 rounded-2xl border text-left transition cursor-pointer ${
-                          settings.model === m.id
-                            ? 'bg-cyan-950/40 border-cyan-500/50 shadow-md shadow-cyan-950/30'
-                            : 'bg-white/[0.02] border-white/5 hover:border-white/15'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="font-bold text-sm text-white">{m.name}</span>
-                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                            {m.badge}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-400">{m.desc}</p>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
                 <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.03] border border-white/5">
                   <div>
                     <h4 className="text-sm font-semibold text-white">Dynamic Accent Switching</h4>
-                    <p className="text-xs text-slate-400">Automatically switch window accent to Blue for Hanex &amp; Pink for Shumex</p>
+                    <p className="text-xs text-slate-400">
+                      Automatically morph accent colors to Blue for Hanex &amp; Pink for Shumex
+                    </p>
                   </div>
                   <button
                     onClick={() => onSaveSettings({ syncThemeWithAgent: !settings.syncThemeWithAgent })}
@@ -412,6 +529,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       }`}
                     />
                   </button>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/5 space-y-2">
+                  <h4 className="text-sm font-semibold text-white">Independent Agent Memory</h4>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Hanex and Shumex remember their own selected AI provider and model. You can pair Hanex with a pragmatic coding model (like GPT-4o or Qwen 2.5 Coder) and Shumex with an imaginative writer (like Claude 3.7 Sonnet or Gemini 3.8 Flash).
+                  </p>
                 </div>
               </div>
             )}
@@ -472,7 +596,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="p-3.5 rounded-2xl bg-rose-950/20 border border-rose-500/20 flex items-center justify-between">
                   <div>
                     <h4 className="text-sm font-semibold text-rose-300">Factory Reset</h4>
-                    <p className="text-xs text-rose-300/70">Wipe all stored keys, preferences, and chats</p>
+                    <p className="text-xs text-rose-300/70">Wipe all stored provider keys, settings, and chats</p>
                   </div>
                   <button
                     onClick={() => {
@@ -496,7 +620,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               onClick={onClose}
               className="px-5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold transition cursor-pointer"
             >
-              Close
+              Done
             </button>
           </div>
         </motion.div>

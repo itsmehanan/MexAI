@@ -10,7 +10,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+// AI Studio dev server runs on port 3000. In production containers, use process.env.PORT.
+const PORT = process.env.NODE_ENV === 'production' ? (Number(process.env.PORT) || 8080) : 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -30,6 +31,8 @@ Personality & Demeanor:
 - Quirks & Dynamic: You are the creative counterpart to Hanex (who is calm, grounded, and practical). You bring heart, style, brainstorming vitality, and playful insight to whatever the user is working on.`
 };
 
+export type ProviderType = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama';
+
 function formatErrorMessage(err: any): string {
   if (!err) return 'Unknown error occurred.';
   let message = err.message || String(err);
@@ -38,22 +41,212 @@ function formatErrorMessage(err: any): string {
     if (parsed.error?.message) {
       return parsed.error.message;
     }
+    if (parsed.error && typeof parsed.error === 'string') {
+      return parsed.error;
+    }
   } catch (jsonErr) {
     console.warn('formatErrorMessage: Failed to parse error JSON payload:', jsonErr);
   }
   return message;
 }
 
-// Check system status & if default key exists
+function resolveApiKey(provider: ProviderType, customKey?: string): string {
+  const custom = customKey?.trim();
+  if (custom) return custom;
+
+  switch (provider) {
+    case 'gemini':
+      return process.env.GEMINI_API_KEY?.trim() || '';
+    case 'openai':
+      return process.env.OPENAI_API_KEY?.trim() || '';
+    case 'anthropic':
+      return process.env.ANTHROPIC_API_KEY?.trim() || '';
+    case 'openrouter':
+      return process.env.OPENROUTER_API_KEY?.trim() || '';
+    case 'ollama':
+      return ''; // Not needed
+    default:
+      return '';
+  }
+}
+
+// Check system status & environmental key availability
 app.get('/api/status', (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
     hasEnvKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim().length > 5),
     defaultModel: 'gemini-3.8-flash',
+    envKeys: {
+      gemini: Boolean(process.env.GEMINI_API_KEY?.trim()),
+      openai: Boolean(process.env.OPENAI_API_KEY?.trim()),
+      anthropic: Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
+      openrouter: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
+      ollama: true, // Always testable locally
+    },
   });
 });
 
-// Validate an API Key
+// Fetch installed Ollama models
+app.post('/api/providers/ollama/models', async (req: Request, res: Response) => {
+  const baseUrl = (req.body.baseUrl?.trim() || 'http://localhost:11434').replace(/\/+$/, '');
+  try {
+    const resp = await fetch(`${baseUrl}/api/tags`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!resp.ok) {
+      res.status(resp.status).json({
+        models: [],
+        error: `Ollama returned HTTP ${resp.status} at ${baseUrl}/api/tags`,
+      });
+      return;
+    }
+    const data: any = await resp.json();
+    const models = (data.models || []).map((m: any) => ({
+      id: m.name || m.model,
+      name: m.name || m.model,
+      provider: 'ollama',
+      description: m.details ? `${m.details.family || ''} ${m.details.parameter_size || ''}`.trim() : 'Local model',
+    }));
+    res.json({ models });
+  } catch (err: any) {
+    console.warn('Ollama model fetch failed:', err);
+    res.status(500).json({
+      models: [],
+      error: `Could not reach Ollama server at ${baseUrl}. Ensure Ollama is running. (${err.message})`,
+    });
+  }
+});
+
+// Test connection endpoint for all providers
+app.post('/api/providers/test', async (req: Request, res: Response) => {
+  const { provider, apiKey, baseUrl, model } = req.body;
+  const p = (provider || 'gemini') as ProviderType;
+  const resolvedKey = resolveApiKey(p, apiKey);
+
+  if (p !== 'ollama' && !resolvedKey) {
+    res.status(400).json({
+      valid: false,
+      error: `API key is required to test ${p.toUpperCase()}.`,
+    });
+    return;
+  }
+
+  try {
+    if (p === 'gemini') {
+      const ai = new GoogleGenAI({
+        apiKey: resolvedKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+      });
+      const result = await ai.models.generateContent({
+        model: model || 'gemini-3.8-flash',
+        contents: 'Ping test. Reply with OK.',
+      });
+      res.json({ valid: true, reply: result.text?.trim() || 'OK', model: model || 'gemini-3.8-flash' });
+      return;
+    }
+
+    if (p === 'openai') {
+      const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${resolvedKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model || 'gpt-4o-mini',
+          messages: [{ role: 'user', content: 'Ping test. Reply with OK.' }],
+          max_tokens: 10,
+        }),
+      });
+      if (!resp.ok) {
+        const errJson: any = await resp.json().catch(() => ({}));
+        throw new Error(errJson.error?.message || `OpenAI returned status ${resp.status}`);
+      }
+      const data: any = await resp.json();
+      res.json({ valid: true, reply: data.choices?.[0]?.message?.content?.trim() || 'OK', model: model || 'gpt-4o-mini' });
+      return;
+    }
+
+    if (p === 'anthropic') {
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': resolvedKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model || 'claude-3-5-haiku-20241022',
+          max_tokens: 10,
+          messages: [{ role: 'user', content: 'Ping test. Reply with OK.' }],
+        }),
+      });
+      if (!resp.ok) {
+        const errJson: any = await resp.json().catch(() => ({}));
+        throw new Error(errJson.error?.message || `Anthropic returned status ${resp.status}`);
+      }
+      const data: any = await resp.json();
+      const reply = data.content?.[0]?.text?.trim() || 'OK';
+      res.json({ valid: true, reply, model: model || 'claude-3-5-haiku-20241022' });
+      return;
+    }
+
+    if (p === 'openrouter') {
+      const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${resolvedKey}`,
+          'HTTP-Referer': 'https://hanex-and-shumex.local',
+          'X-Title': 'Hanex & Shumex Desktop',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model || 'meta-llama/llama-3.3-70b-instruct:free',
+          messages: [{ role: 'user', content: 'Ping test. Reply with OK.' }],
+          max_tokens: 10,
+        }),
+      });
+      if (!resp.ok) {
+        const errJson: any = await resp.json().catch(() => ({}));
+        throw new Error(errJson.error?.message || `OpenRouter returned status ${resp.status}`);
+      }
+      const data: any = await resp.json();
+      res.json({
+        valid: true,
+        reply: data.choices?.[0]?.message?.content?.trim() || 'OK',
+        model: model || 'meta-llama/llama-3.3-70b-instruct:free',
+      });
+      return;
+    }
+
+    if (p === 'ollama') {
+      const host = (baseUrl?.trim() || 'http://localhost:11434').replace(/\/+$/, '');
+      const resp = await fetch(`${host}/api/tags`, { method: 'GET' });
+      if (!resp.ok) {
+        throw new Error(`Ollama returned status ${resp.status} at ${host}`);
+      }
+      const data: any = await resp.json();
+      const count = data.models?.length || 0;
+      res.json({
+        valid: true,
+        reply: `Connected. Found ${count} installed model${count === 1 ? '' : 's'}.`,
+        model: count > 0 ? data.models[0].name : 'none',
+      });
+      return;
+    }
+
+    res.status(400).json({ valid: false, error: `Unsupported provider: ${provider}` });
+  } catch (err: any) {
+    console.warn(`Test connection failed for ${p}:`, err);
+    res.status(400).json({
+      valid: false,
+      error: formatErrorMessage(err),
+    });
+  }
+});
+
+// Legacy validate-key endpoint (compatibility with existing UI)
 app.post('/api/validate-key', async (req: Request, res: Response) => {
   const customKey = req.body.apiKey?.trim();
   const keyToTest = customKey || process.env.GEMINI_API_KEY;
@@ -66,18 +259,12 @@ app.post('/api/validate-key', async (req: Request, res: Response) => {
   try {
     const ai = new GoogleGenAI({
       apiKey: keyToTest,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
     });
-
     const result = await ai.models.generateContent({
       model: 'gemini-3.8-flash',
       contents: 'Ping test. Reply with simply "OK".',
     });
-
     res.json({ valid: true, reply: result.text?.trim() || 'OK' });
   } catch (err: any) {
     res.status(400).json({
@@ -87,133 +274,403 @@ app.post('/api/validate-key', async (req: Request, res: Response) => {
   }
 });
 
-// Helper to run content stream with retry / fallback
-async function getStreamWithFallback(
-  ai: GoogleGenAI,
+// =========================================================================
+// PROVIDER STREAMING GENERATORS
+// =========================================================================
+
+// Gemini Stream
+async function* streamGemini(
+  apiKey: string,
   modelName: string,
-  contents: any[],
+  messages: any[],
   systemInstruction: string
-) {
+): AsyncGenerator<string> {
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+  });
+
+  const formattedContents = messages.map((m: any) => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
+
+  if (formattedContents.length === 0) {
+    formattedContents.push({ role: 'user', parts: [{ text: 'Hello!' }] });
+  }
+
+  let responseStream;
   try {
-    return await ai.models.generateContentStream({
+    responseStream = await ai.models.generateContentStream({
       model: modelName,
-      contents,
+      contents: formattedContents,
       config: { systemInstruction },
     });
   } catch (err: any) {
     const msg = String(err?.message || '');
-    // If high demand spike (503), retry once or fallback to flash-lite
     if (msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE')) {
       await new Promise((r) => setTimeout(r, 600));
-      try {
-        return await ai.models.generateContentStream({
-          model: 'gemini-3.1-flash-lite',
-          contents,
-          config: { systemInstruction },
-        });
-      } catch (fallbackErr) {
-        throw fallbackErr;
-      }
+      responseStream = await ai.models.generateContentStream({
+        model: 'gemini-3.1-flash-lite',
+        contents: formattedContents,
+        config: { systemInstruction },
+      });
+    } else {
+      throw err;
     }
-    throw err;
+  }
+
+  let chunkCount = 0;
+  for await (const chunk of responseStream) {
+    chunkCount++;
+    const textChunk = chunk.text;
+    const candidate = chunk.candidates?.[0];
+    if (chunk.promptFeedback?.blockReason) {
+      throw new Error(`Response blocked by safety filters (${chunk.promptFeedback.blockReason})`);
+    }
+    if (candidate?.finishReason && candidate.finishReason !== 'STOP' && !textChunk && chunkCount === 1) {
+      throw new Error(`Model stopped with reason: ${candidate.finishReason}`);
+    }
+    if (textChunk) {
+      yield textChunk;
+    }
   }
 }
 
-// Streaming Chat Endpoint via SSE
-app.post('/api/chat/stream', async (req: Request, res: Response) => {
-  const { agentId, messages, customKey, model } = req.body;
-  const keyToUse = customKey?.trim() || process.env.GEMINI_API_KEY;
+// OpenAI Stream
+async function* streamOpenAI(
+  apiKey: string,
+  modelName: string,
+  messages: any[],
+  systemInstruction: string
+): AsyncGenerator<string> {
+  const formattedMessages = [
+    { role: 'system', content: systemInstruction },
+    ...messages.map((m: any) => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.content,
+    })),
+  ];
 
-  if (!keyToUse) {
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: modelName,
+      messages: formattedMessages,
+      stream: true,
+    }),
+  });
+
+  if (!resp.ok) {
+    const errJson: any = await resp.json().catch(() => ({}));
+    throw new Error(errJson.error?.message || `OpenAI error: HTTP ${resp.status}`);
+  }
+
+  if (!resp.body) throw new Error('No readable response body from OpenAI.');
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === 'data: [DONE]') continue;
+      if (trimmed.startsWith('data: ')) {
+        try {
+          const parsed = JSON.parse(trimmed.slice(6));
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) yield content;
+        } catch (err) {
+          console.warn('OpenAI stream JSON parse error:', err);
+        }
+      }
+    }
+  }
+}
+
+// Anthropic Claude Stream
+async function* streamAnthropic(
+  apiKey: string,
+  modelName: string,
+  messages: any[],
+  systemInstruction: string
+): AsyncGenerator<string> {
+  // Anthropic messages cannot contain 'system' role; pass system at top level
+  const formattedMessages: { role: 'user' | 'assistant'; content: string }[] = [];
+  for (const m of messages) {
+    formattedMessages.push({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.content || '...',
+    });
+  }
+
+  if (formattedMessages.length === 0) {
+    formattedMessages.push({ role: 'user', content: 'Hello!' });
+  }
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: modelName,
+      max_tokens: 4096,
+      system: systemInstruction,
+      messages: formattedMessages,
+      stream: true,
+    }),
+  });
+
+  if (!resp.ok) {
+    const errJson: any = await resp.json().catch(() => ({}));
+    throw new Error(errJson.error?.message || `Anthropic error: HTTP ${resp.status}`);
+  }
+
+  if (!resp.body) throw new Error('No readable response body from Anthropic.');
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() || '';
+
+    for (const part of parts) {
+      const lines = part.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('data: ')) {
+          try {
+            const parsed = JSON.parse(trimmed.slice(6));
+            if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
+              yield parsed.delta.text;
+            }
+          } catch (err) {
+            console.warn('Anthropic stream parse error:', err);
+          }
+        }
+      }
+    }
+  }
+}
+
+// OpenRouter Stream
+async function* streamOpenRouter(
+  apiKey: string,
+  modelName: string,
+  messages: any[],
+  systemInstruction: string
+): AsyncGenerator<string> {
+  const formattedMessages = [
+    { role: 'system', content: systemInstruction },
+    ...messages.map((m: any) => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.content,
+    })),
+  ];
+
+  const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://hanex-and-shumex.local',
+      'X-Title': 'Hanex & Shumex Desktop',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: modelName,
+      messages: formattedMessages,
+      stream: true,
+    }),
+  });
+
+  if (!resp.ok) {
+    const errJson: any = await resp.json().catch(() => ({}));
+    throw new Error(errJson.error?.message || `OpenRouter error: HTTP ${resp.status}`);
+  }
+
+  if (!resp.body) throw new Error('No readable response body from OpenRouter.');
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === 'data: [DONE]') continue;
+      if (trimmed.startsWith('data: ')) {
+        try {
+          const parsed = JSON.parse(trimmed.slice(6));
+          const content = parsed.choices?.[0]?.delta?.content;
+          if (content) yield content;
+        } catch (err) {
+          console.warn('OpenRouter stream parse error:', err);
+        }
+      }
+    }
+  }
+}
+
+// Ollama Stream
+async function* streamOllama(
+  baseUrl: string,
+  modelName: string,
+  messages: any[],
+  systemInstruction: string
+): AsyncGenerator<string> {
+  const host = (baseUrl || 'http://localhost:11434').replace(/\/+$/, '');
+  const formattedMessages = [
+    { role: 'system', content: systemInstruction },
+    ...messages.map((m: any) => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.content,
+    })),
+  ];
+
+  const resp = await fetch(`${host}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: modelName || 'llama3.2',
+      messages: formattedMessages,
+      stream: true,
+    }),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    throw new Error(`Ollama error (${resp.status}): ${errText || 'Connection failed'}`);
+  }
+
+  if (!resp.body) throw new Error('No readable response body from Ollama.');
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed.message?.content) {
+          yield parsed.message.content;
+        }
+      } catch (err) {
+        console.warn('Ollama stream parse error:', err);
+      }
+    }
+  }
+}
+
+// Unified Stream Dispatcher
+async function* streamProvider(
+  provider: ProviderType,
+  model: string,
+  messages: any[],
+  systemInstruction: string,
+  providerConfig?: { apiKey?: string; baseUrl?: string }
+): AsyncGenerator<string> {
+  const key = resolveApiKey(provider, providerConfig?.apiKey);
+
+  if (provider !== 'ollama' && !key) {
+    throw new Error(
+      `No API key configured for ${provider.toUpperCase()}. Please add your API key in Settings.`
+    );
+  }
+
+  switch (provider) {
+    case 'gemini':
+      yield* streamGemini(key, model || 'gemini-3.8-flash', messages, systemInstruction);
+      break;
+    case 'openai':
+      yield* streamOpenAI(key, model || 'gpt-4o', messages, systemInstruction);
+      break;
+    case 'anthropic':
+      yield* streamAnthropic(key, model || 'claude-3-7-sonnet-20250219', messages, systemInstruction);
+      break;
+    case 'openrouter':
+      yield* streamOpenRouter(key, model || 'meta-llama/llama-3.3-70b-instruct:free', messages, systemInstruction);
+      break;
+    case 'ollama':
+      yield* streamOllama(providerConfig?.baseUrl || 'http://localhost:11434', model || 'llama3.2', messages, systemInstruction);
+      break;
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
+}
+
+// Unified SSE Streaming Endpoint
+app.post('/api/chat/stream', async (req: Request, res: Response) => {
+  const { agentId, messages, provider, model, providerConfig, customKey } = req.body;
+  const p = (provider || 'gemini') as ProviderType;
+  const agent = (agentId === 'shumex' ? 'shumex' : 'hanex') as 'hanex' | 'shumex';
+  const systemInstruction = AGENT_SYSTEM_PROMPTS[agent];
+
+  // Resolve config backwards compatible with customKey
+  const effectiveConfig = {
+    apiKey: providerConfig?.apiKey || customKey,
+    baseUrl: providerConfig?.baseUrl,
+  };
+
+  const key = resolveApiKey(p, effectiveConfig.apiKey);
+  if (p !== 'ollama' && !key) {
     res.status(400).json({
-      error: 'No Gemini API key available. Please add your API key in Settings.',
+      error: `API key for ${p.toUpperCase()} is missing. Please add it in Settings.`,
     });
     return;
   }
-
-  const agent = (agentId === 'shumex' ? 'shumex' : 'hanex') as 'hanex' | 'shumex';
-  const systemInstruction = AGENT_SYSTEM_PROMPTS[agent];
-  const modelName = model || 'gemini-3.8-flash';
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
   try {
-    const ai = new GoogleGenAI({
-      apiKey: keyToUse,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-
-    const formattedContents = (messages || []).map((m: any) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }));
-
-    if (formattedContents.length === 0) {
-      formattedContents.push({
-        role: 'user',
-        parts: [{ text: 'Hello!' }],
-      });
-    }
-
-    const responseStream = await getStreamWithFallback(
-      ai,
-      modelName,
-      formattedContents,
-      systemInstruction
-    );
-
-    let chunkCount = 0;
     let totalTextLength = 0;
-    let lastFinishReason: string | undefined;
-    let blockReason: string | undefined;
+    let chunkCount = 0;
 
-    for await (const chunk of responseStream) {
-      chunkCount++;
-      const textChunk = chunk.text;
-      const candidate = chunk.candidates?.[0];
-      if (candidate?.finishReason) {
-        lastFinishReason = candidate.finishReason;
-      }
-      if (chunk.promptFeedback?.blockReason) {
-        blockReason = chunk.promptFeedback.blockReason;
-      }
+    const generator = streamProvider(p, model, messages || [], systemInstruction, effectiveConfig);
 
-      console.log(
-        `[Stream Chunk #${chunkCount}] TextLen: ${textChunk ? textChunk.length : 0}, finishReason: ${candidate?.finishReason || 'none'}, blockReason: ${chunk.promptFeedback?.blockReason || 'none'}`
-      );
-
+    for await (const textChunk of generator) {
       if (textChunk) {
+        chunkCount++;
         totalTextLength += textChunk.length;
         res.write(`data: ${JSON.stringify({ text: textChunk })}\n\n`);
       }
     }
 
-    console.log(
-      `[Stream Complete] Total Chunks: ${chunkCount}, TotalTextLength: ${totalTextLength}, lastFinishReason: ${lastFinishReason || 'none'}, blockReason: ${blockReason || 'none'}`
-    );
+    console.log(`[Stream Complete] Provider: ${p}, Model: ${model}, Chunks: ${chunkCount}, TotalLength: ${totalTextLength}`);
 
-    if (blockReason) {
-      console.warn(`[Stream Blocked] Response blocked: ${blockReason}`);
-      res.write(
-        `data: ${JSON.stringify({
-          error: `Response was blocked by safety filters (${blockReason}).`,
-        })}\n\n`
-      );
-    } else if (lastFinishReason && lastFinishReason !== 'STOP' && totalTextLength === 0) {
-      console.warn(`[Stream Non-Stop Finish] Reason: ${lastFinishReason}`);
-      res.write(
-        `data: ${JSON.stringify({
-          error: `Response stopped unexpectedly with reason: ${lastFinishReason}.`,
-        })}\n\n`
-      );
-    } else if (totalTextLength === 0) {
-      console.warn('[Stream Empty] Model returned 0 text chunks.');
+    if (totalTextLength === 0) {
+      console.warn(`[Stream Empty] Provider ${p} returned 0 text chunks.`);
       res.write(
         `data: ${JSON.stringify({
           error: 'The model returned an empty response. Try again or switch the model in Settings',
@@ -224,7 +681,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
     }
     res.end();
   } catch (error: any) {
-    console.error('Error in streaming chat:', error);
+    console.error(`Error in streaming chat [${p}]:`, error);
     res.write(
       `data: ${JSON.stringify({
         error: formatErrorMessage(error),
@@ -234,89 +691,48 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
   }
 });
 
-// Non-streaming fallback endpoint
+// Unified Non-Streaming Fallback Endpoint
 app.post('/api/chat', async (req: Request, res: Response) => {
-  const { agentId, messages, customKey, model } = req.body;
-  const keyToUse = customKey?.trim() || process.env.GEMINI_API_KEY;
+  const { agentId, messages, provider, model, providerConfig, customKey } = req.body;
+  const p = (provider || 'gemini') as ProviderType;
+  const agent = (agentId === 'shumex' ? 'shumex' : 'hanex') as 'hanex' | 'shumex';
+  const systemInstruction = AGENT_SYSTEM_PROMPTS[agent];
 
-  if (!keyToUse) {
+  const effectiveConfig = {
+    apiKey: providerConfig?.apiKey || customKey,
+    baseUrl: providerConfig?.baseUrl,
+  };
+
+  const key = resolveApiKey(p, effectiveConfig.apiKey);
+  if (p !== 'ollama' && !key) {
     res.status(400).json({
-      error: 'No Gemini API key available. Please add your API key in Settings.',
+      error: `API key for ${p.toUpperCase()} is missing. Please add it in Settings.`,
     });
     return;
   }
 
-  const agent = (agentId === 'shumex' ? 'shumex' : 'hanex') as 'hanex' | 'shumex';
-  const systemInstruction = AGENT_SYSTEM_PROMPTS[agent];
-  const modelName = model || 'gemini-3.8-flash';
-
   try {
-    const ai = new GoogleGenAI({
-      apiKey: keyToUse,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
+    let accumulatedText = '';
+    const generator = streamProvider(p, model, messages || [], systemInstruction, effectiveConfig);
 
-    const formattedContents = (messages || []).map((m: any) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }));
-
-    let response;
-    try {
-      response = await ai.models.generateContent({
-        model: modelName,
-        contents: formattedContents,
-        config: { systemInstruction },
-      });
-    } catch (err: any) {
-      const msg = String(err?.message || '');
-      if (msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE')) {
-        await new Promise((r) => setTimeout(r, 600));
-        response = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite',
-          contents: formattedContents,
-          config: { systemInstruction },
-        });
-      } else {
-        throw err;
+    for await (const textChunk of generator) {
+      if (textChunk) {
+        accumulatedText += textChunk;
       }
     }
 
-    const candidate = response.candidates?.[0];
-    const blockReason = response.promptFeedback?.blockReason;
-    const finishReason = candidate?.finishReason;
-    const textOutput = response.text || '';
-
-    console.log(
-      `[/api/chat Complete] finishReason: ${finishReason || 'none'}, blockReason: ${blockReason || 'none'}, textLen: ${textOutput.length}`
-    );
-
-    if (blockReason) {
-      res.status(400).json({
-        error: `Response was blocked by safety filters (${blockReason}).`,
-      });
-      return;
-    }
-
-    if (!textOutput.trim()) {
+    if (!accumulatedText.trim()) {
       res.status(500).json({
-        error:
-          finishReason && finishReason !== 'STOP'
-            ? `Response stopped with reason: ${finishReason}`
-            : 'The model returned an empty response. Try again or switch the model in Settings',
+        error: 'The model returned an empty response. Try again or switch the model in Settings',
       });
       return;
     }
 
     res.json({
-      text: textOutput,
+      text: accumulatedText,
     });
   } catch (error: any) {
-    console.error('Error in chat:', error);
+    console.error(`Error in non-streaming chat [${p}]:`, error);
     res.status(500).json({
       error: formatErrorMessage(error),
     });
@@ -327,7 +743,10 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer } = await import('vite');
     const vite = await createServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -339,8 +758,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on http://0.0.0.0:${PORT}`);
   });
 }
 

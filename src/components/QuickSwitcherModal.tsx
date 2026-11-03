@@ -65,7 +65,7 @@ export const QuickSwitcherModal: React.FC<QuickSwitcherModalProps> = ({
     },
     {
       id: 'open-settings',
-      label: 'Open App Settings & Gemini API Keys',
+      label: 'Open App Settings & AI Model Providers',
       category: 'System',
       badge: 'Preferences',
       icon: <Settings className="w-4 h-4 text-cyan-400" />,
