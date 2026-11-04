@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  ArrowLeftRight,
+  Search,
   Settings,
   ChevronDown,
   Check,
@@ -20,7 +20,7 @@ import { Avatar } from './Avatar';
 
 interface DesktopHeaderProps {
   activeAgent: AgentProfile;
-  onSwitchAgent: (id: AgentId) => void;
+  onOpenQuickSwitcher: () => void;
   onOpenSettings: () => void;
   selectedModel: AgentModelSelection;
   onSelectModel: (selection: AgentModelSelection) => void;
@@ -34,7 +34,7 @@ interface DesktopHeaderProps {
 
 export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
   activeAgent,
-  onSwitchAgent,
+  onOpenQuickSwitcher,
   onOpenSettings,
   selectedModel,
   onSelectModel,
@@ -49,8 +49,6 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const isHanex = activeAgent.id === 'hanex';
-  const otherAgentId: AgentId = isHanex ? 'shumex' : 'hanex';
-  const otherAgent = AGENTS[otherAgentId];
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -101,33 +99,8 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
   const currentModelDisplayName = currentModelOption?.name || selectedModel.model;
 
   return (
-    <header className="h-14 px-4 bg-[#080d17]/95 border-b border-white/10 flex items-center justify-between select-none backdrop-blur-md relative z-30">
-      {/* Left: Window Controls / Mac style traffic lights */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-1.5 mr-2">
-          <span className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e]/50 cursor-pointer shadow-sm hover:opacity-80 transition" title="Close" />
-          <span className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123]/50 cursor-pointer shadow-sm hover:opacity-80 transition" title="Minimize" />
-          <span className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29]/50 cursor-pointer shadow-sm hover:opacity-80 transition" title="Maximize" />
-        </div>
-        <div className="h-4 w-[1px] bg-white/10 hidden sm:block" />
-        <span className="text-xs font-semibold text-slate-300 hidden sm:inline tracking-tight">
-          Hanex &amp; Shumex
-        </span>
-      </div>
-
-      {/* Center: Active Agent Status Pill */}
-      <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 shadow-inner">
-        <Avatar agentId={activeAgent.id} size="xs" showStatus={true} status="online" />
-        <span className="text-xs font-bold text-white tracking-tight">{activeAgent.name}</span>
-        <span className="text-slate-500 text-[10px]">•</span>
-        <span
-          className={`text-[11px] font-medium hidden md:inline ${
-            isHanex ? 'text-cyan-400' : 'text-pink-400'
-          }`}
-        >
-          {activeAgent.roleTitle}
-        </span>
-      </div>
+    <header className="app-header">
+      <div className="header-intro"><span className="header-sparkle">✳</span><span>YOUR SPACE TO THINK <b> / </b> <strong>Chat</strong></span></div>
 
       {/* Right: Model Dropdown & Quick Switch */}
       <div className="flex items-center gap-2 relative">
@@ -158,7 +131,7 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
           {/* Popover Dropdown Menu */}
           {isDropdownOpen && (
             <div
-              className={`absolute right-0 top-full mt-2 w-80 sm:w-96 rounded-2xl bg-[#0c1220] border border-white/15 shadow-2xl overflow-hidden z-50 backdrop-blur-2xl flex flex-col max-h-[80vh] ${
+              className={`absolute right-0 top-full mt-2 w-[min(20rem,85vw)] sm:w-96 rounded-2xl bg-[#0c1220] border border-white/15 shadow-2xl overflow-hidden z-50 backdrop-blur-2xl flex flex-col max-h-[80vh] ${
                 isHanex ? 'shadow-cyan-950/50' : 'shadow-pink-950/50'
               }`}
             >
@@ -340,25 +313,11 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
           )}
         </div>
 
-        {/* Switch Agent Button */}
-        <button
-          onClick={() => onSwitchAgent(otherAgentId)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer shadow-md ${
-            isHanex
-              ? 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20'
-              : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/20'
-          }`}
-          title={`Switch to ${otherAgent.name}`}
-        >
-          <ArrowLeftRight className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Talk to {otherAgent.name}</span>
-          <span className="sm:hidden">{otherAgent.name}</span>
-        </button>
-
+        <button onClick={onOpenQuickSwitcher} className="header-settings" title="Quick switcher" aria-label="Quick switcher"><Search className="w-4 h-4" /></button>
         {/* Settings button */}
         <button
           onClick={onOpenSettings}
-          className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition cursor-pointer border border-white/5"
+          className="header-settings"
           title="Open Settings &amp; Models"
         >
           <Settings className="w-4 h-4" />

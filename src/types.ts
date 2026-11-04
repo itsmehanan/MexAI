@@ -75,6 +75,7 @@ export interface AppSettings {
   providers: Record<ProviderId, ProviderSettings>;
   openRouterFreeOnly: boolean;
   soundEffects: boolean;
+  confettiEffects: boolean;
   speechSynthesis: boolean;
   voiceSpeed: number;
   syncThemeWithAgent: boolean;

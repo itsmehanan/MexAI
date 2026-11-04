@@ -59,6 +59,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   providers: DEFAULT_PROVIDERS,
   openRouterFreeOnly: true,
   soundEffects: true,
+  confettiEffects: true,
   speechSynthesis: false,
   voiceSpeed: 1.0,
   syncThemeWithAgent: true,
@@ -554,7 +555,7 @@ export default function App() {
     URL.revokeObjectURL(url);
 
     try {
-      confetti({ particleCount: 30, spread: 60, origin: { y: 0.8 } });
+      if (settings.confettiEffects) confetti({ particleCount: 30, spread: 60, origin: { y: 0.8 } });
     } catch {}
   };
 
@@ -588,7 +589,7 @@ export default function App() {
     URL.revokeObjectURL(url);
 
     try {
-      confetti({ particleCount: 50, spread: 80, origin: { y: 0.7 } });
+      if (settings.confettiEffects) confetti({ particleCount: 50, spread: 80, origin: { y: 0.7 } });
     } catch {}
   };
 
@@ -610,27 +611,11 @@ export default function App() {
     !envKeys[activeModelSelection.provider];
 
   return (
-    <div
-      className={`h-screen w-screen flex flex-col bg-[#070b13] text-slate-100 overflow-hidden font-sans transition-colors duration-500 relative ${
-        isHanex ? 'selection:bg-cyan-500/30 selection:text-cyan-200' : 'selection:bg-rose-500/30 selection:text-rose-200'
-      }`}
-    >
-      {/* Background Ambient Glow Spots */}
-      <div
-        className={`pointer-events-none fixed -top-40 -right-40 w-96 h-96 rounded-full blur-[140px] opacity-25 transition-colors duration-700 ${
-          isHanex ? 'bg-cyan-500' : 'bg-rose-500'
-        }`}
-      />
-      <div
-        className={`pointer-events-none fixed -bottom-40 -left-40 w-96 h-96 rounded-full blur-[160px] opacity-20 transition-colors duration-700 ${
-          isHanex ? 'bg-blue-600' : 'bg-fuchsia-600'
-        }`}
-      />
-
+    <div className={`app-shell theme-${activeAgentId}`}>
       {/* Desktop Window Title Header with Multi-Provider Model Dropdown */}
       <DesktopHeader
         activeAgent={activeAgent}
-        onSwitchAgent={handleSelectAgent}
+        onOpenQuickSwitcher={() => setIsQuickSwitcherOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         selectedModel={activeModelSelection}
         onSelectModel={handleSelectModelForActiveAgent}
@@ -647,74 +632,16 @@ export default function App() {
       {/* Main Desktop Container: Sidebar + Chat Area */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
-        <Sidebar
-          activeAgentId={activeAgentId}
-          onSelectAgent={handleSelectAgent}
-          messages={messages}
-          onClearChat={handleClearChat}
-          onExportChat={handleExportChat}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenQuickSwitcher={() => setIsQuickSwitcherOpen(true)}
-          soundEnabled={settings.soundEffects}
-          onToggleSound={() => handleSaveSettings({ soundEffects: !settings.soundEffects })}
-          hasCustomKey={Boolean(currentProviderConfig?.apiKey?.trim())}
-          hasEnvKey={hasEnvKey}
-          activeModelSelection={activeModelSelection}
-          agentModels={agentModels}
-          providers={settings.providers}
-        />
+        <Sidebar activeAgentId={activeAgentId} onSelectAgent={handleSelectAgent} providers={settings.providers} isGenerating={isGenerating} />
 
         {/* Chat Main Area */}
-        <main className="flex-1 flex flex-col h-full bg-[#0a0f1c]/70 relative overflow-hidden backdrop-blur-sm">
-          {/* Subtle Top Chat Subheader for Active Agent */}
-          <div className="px-6 py-2.5 border-b border-white/5 flex items-center justify-between bg-black/10 select-none z-10">
-            <div className="flex items-center gap-3">
-              <span
-                className={`w-2 h-2 rounded-full animate-pulse ${
-                  isHanex ? 'bg-cyan-400' : 'bg-pink-400'
-                }`}
-              />
-              <span className="text-xs font-semibold text-slate-300">
-                {activeAgent.name}'s Workspace
-              </span>
-              <span className="text-slate-600 text-xs">•</span>
-              <span className="text-[11px] text-slate-400 hidden sm:inline">
-                Powered by{' '}
-                <strong className="text-slate-200 font-mono">
-                  {activeModelSelection.model}
-                </strong>{' '}
-                ({PROVIDERS_META[activeModelSelection.provider]?.name || activeModelSelection.provider})
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  const randomPrompt =
-                    activeAgent.suggestedPrompts[
-                      Math.floor(Math.random() * activeAgent.suggestedPrompts.length)
-                    ];
-                  handleSendMessage(randomPrompt.prompt);
-                }}
-                disabled={isGenerating}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition cursor-pointer disabled:opacity-40 ${
-                  isHanex
-                    ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/20'
-                    : 'bg-pink-500/10 text-pink-300 border-pink-500/30 hover:bg-pink-500/20'
-                }`}
-                title="Send a random prompt starter"
-              >
-                <Sparkles className="w-3 h-3" />
-                <span className="hidden md:inline">Surprise Prompt</span>
-              </button>
-
-              <button
-                onClick={() => handleClearChat(activeAgentId)}
-                className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-white/5 transition cursor-pointer"
-                title="Clear this conversation"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
+        <main className="chat-main">
+          <div className="chat-heading">
+            <div className="chat-heading-title"><Avatar agentId={activeAgentId} size="md" status={isGenerating ? 'typing' : 'online'} /><div><span className="eyebrow">YOUR CONVERSATION</span><h1>Chat with {activeAgent.name} <span className="heading-dot">✳</span></h1><p>{isHanex ? 'A little clarity, whenever you need it.' : 'A little inspiration, whenever you need it.'}</p></div></div>
+            <div className="heading-actions">
+              <button onClick={() => { const prompt = activeAgent.suggestedPrompts[Math.floor(Math.random() * activeAgent.suggestedPrompts.length)]; handleSendMessage(prompt.prompt); }} disabled={isGenerating} title="Send a random prompt starter" aria-label="Send a random prompt starter"><Sparkles size={17} /></button>
+              <button onClick={() => handleExportChat(activeAgentId)} title="Export chat history" aria-label="Export chat history"><Download size={17} /></button>
+              <button onClick={() => handleClearChat(activeAgentId)} title="Clear this conversation" aria-label="Clear this conversation"><Trash2 size={17} /></button>
             </div>
           </div>
 
@@ -738,42 +665,17 @@ export default function App() {
 
           {/* Message List */}
           <div className="flex-1 overflow-y-auto py-4 space-y-1 relative">
-            {/* Ambient agent greeting header banner if few messages */}
             {activeMessages.length <= 2 && (
-              <div className="max-w-xl mx-auto my-6 px-4 text-center">
-                <div className="inline-flex p-3 rounded-3xl bg-white/[0.02] border border-white/5 mb-3 shadow-xl">
-                  <Avatar agentId={activeAgent.id} size="xl" showStatus={true} status="online" />
-                </div>
-                <h2 className="text-lg font-bold text-white tracking-tight mb-1">
-                  Meet {activeAgent.name}
-                </h2>
-                <p className="text-xs text-slate-400 leading-relaxed max-w-md mx-auto mb-2">
-                  {activeAgent.description}
-                </p>
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] font-mono text-slate-300 mb-4">
-                  <Cpu className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Model: {activeModelSelection.model}</span>
-                </div>
-
-                {/* Prompt Starters Chips */}
-                <div className="flex flex-wrap justify-center gap-2 mt-2">
+              <div className="welcome-panel">
+                <div className="welcome-avatar"><Avatar agentId={activeAgent.id} size="2xl" status={isGenerating ? 'typing' : 'online'} /></div>
+                <span className="eyebrow">A LITTLE SPACE FOR BIG IDEAS</span>
+                <h2>Good to see you <span>here.</span></h2>
+                <p>Meet {activeAgent.name}, your {isHanex ? 'thoughtful partner for making sense of things' : 'creative partner for wherever ideas take you'}.</p>
+                <div className="starter-label">NOT SURE WHERE TO START?</div>
+                <div className="starter-grid">
                   {activeAgent.suggestedPrompts.map((p, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => handleSendMessage(p.prompt)}
-                      disabled={isGenerating}
-                      className={`text-left text-xs px-3 py-2 rounded-xl border transition cursor-pointer flex items-center gap-2 group ${
-                        isHanex
-                          ? 'bg-slate-900/60 border-cyan-500/20 hover:border-cyan-400 text-slate-300 hover:text-white'
-                          : 'bg-slate-900/60 border-pink-500/20 hover:border-pink-400 text-slate-300 hover:text-white'
-                      }`}
-                    >
-                      <Sparkles
-                        className={`w-3.5 h-3.5 ${
-                          isHanex ? 'text-cyan-400' : 'text-pink-400'
-                        } group-hover:scale-110 transition-transform`}
-                      />
-                      <span>{p.title}</span>
+                    <button key={idx} onClick={() => handleSendMessage(p.prompt)} disabled={isGenerating}>
+                      <Sparkles size={15} /><span>{p.title}</span><span className="starter-arrow">↗</span>
                     </button>
                   ))}
                 </div>

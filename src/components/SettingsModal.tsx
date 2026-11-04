@@ -441,6 +441,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {activeTab === 'voice' && (
               <div className="space-y-5">
                 <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.03] border border-white/5">
+                  <div><h4 className="text-sm font-semibold text-white">Confetti Effects</h4><p className="text-xs text-slate-400">Celebrate when exporting conversations</p></div>
+                  <button type="button" role="switch" aria-label="Confetti effects" aria-checked={settings.confettiEffects} onClick={() => onSaveSettings({ confettiEffects: !settings.confettiEffects })} className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer ${settings.confettiEffects ? 'bg-cyan-500' : 'bg-slate-700'}`}><span className={`absolute top-1 w-4 h-4 rounded-full bg-white ${settings.confettiEffects ? 'left-6' : 'left-1'}`} /></button>
+                </div>
+                <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.03] border border-white/5">
                   <div>
                     <h4 className="text-sm font-semibold text-white">Sound Effects</h4>
                     <p className="text-xs text-slate-400">Play subtle high-tech chimes on send, receive, and switch</p>

@@ -60,11 +60,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
         <div className="flex items-end gap-2.5 max-w-[85%] md:max-w-[75%]">
           <div className="flex flex-col items-end">
             <div
-              className={`px-4 py-3 rounded-2xl rounded-br-sm text-[14px] leading-relaxed shadow-lg backdrop-blur-md ${
-                isHanex
-                  ? 'bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 text-white shadow-cyan-950/30'
-                  : 'bg-gradient-to-r from-rose-500 via-pink-600 to-fuchsia-600 text-white shadow-pink-950/30'
-              }`}
+              className="user-bubble"
             >
               <p className="whitespace-pre-wrap select-text">{message.content}</p>
             </div>
@@ -122,11 +118,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
 
           {/* Content Box */}
           <div
-            className={`p-4 md:p-5 rounded-2xl rounded-tl-sm backdrop-blur-xl border transition-colors duration-300 ${
-              isHanex
-                ? 'bg-[#0f172a]/85 border-cyan-500/20 shadow-xl shadow-cyan-950/20'
-                : 'bg-[#18111e]/85 border-pink-500/20 shadow-xl shadow-pink-950/20'
-            }`}
+            className="assistant-bubble"
           >
             {message.status === 'error' ? (
               <div className="flex items-start gap-2.5 text-rose-300 bg-rose-950/30 p-3 rounded-xl border border-rose-500/30">
