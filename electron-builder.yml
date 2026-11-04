@@ -8,8 +8,13 @@ files:
   - dist-electron/**/*
   - package.json
   - '!**/.env*'
-  # The server bundle contains its runtime dependencies; Vite is development-only.
+  # Server and updater bundles include runtime dependencies; Vite is development-only.
   - '!node_modules/**'
+publish:
+  provider: github
+  owner: itsmehanan
+  repo: MexAI
+  releaseType: release
 asar: true
 npmRebuild: false
 win:

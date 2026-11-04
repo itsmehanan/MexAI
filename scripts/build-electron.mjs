@@ -17,3 +17,16 @@ await build({
   },
   logLevel: 'info',
 });
+
+// The installed app has no node_modules, so ship the updater and its runtime
+// dependencies as a self-contained bundle alongside the server.
+await build({
+  entryPoints: ['scripts/updater-entry.cjs'],
+  outfile: 'dist-electron/updater.cjs',
+  bundle: true,
+  platform: 'node',
+  target: 'node22',
+  format: 'cjs',
+  external: ['electron'],
+  logLevel: 'info',
+});

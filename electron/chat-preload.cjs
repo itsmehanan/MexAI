@@ -7,3 +7,14 @@ contextBridge.exposeInMainWorld('secureKeys', {
   setCustomEndpoint: url => ipcRenderer.invoke('keys:custom-endpoint', url),
   migrate: keys => ipcRenderer.invoke('keys:migrate', keys),
 });
+
+contextBridge.exposeInMainWorld('desktopUpdates', {
+  status: () => ipcRenderer.invoke('updates:status'),
+  check: () => ipcRenderer.invoke('updates:check'),
+  restart: () => ipcRenderer.invoke('updates:restart'),
+  onState: callback => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('updates:state', listener);
+    return () => ipcRenderer.removeListener('updates:state', listener);
+  },
+});

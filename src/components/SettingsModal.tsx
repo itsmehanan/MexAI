@@ -34,6 +34,8 @@ interface SettingsModalProps {
   onClearAgentChat: (id: AgentId) => void;
   onResetAllData: () => void;
   onExportAll: () => void;
+  updateState: DesktopUpdateState;
+  onCheckUpdates: () => void;
   hasEnvKey: boolean;
   savedKeys: Record<string, boolean>;
   secureStorageAvailable: boolean;
@@ -54,6 +56,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClearAgentChat,
   onResetAllData,
   onExportAll,
+  updateState, onCheckUpdates,
   hasEnvKey,
   savedKeys, secureStorageAvailable, keyStorageError, onSaveKey, onRemoveKey,
   envKeys = {},
@@ -507,6 +510,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* TAB 3: GENERAL PREFERENCES */}
             {activeTab === 'general' && (
               <div className="space-y-4">
+                <div className="flex items-center justify-between gap-4 p-3.5 rounded-2xl bg-white/[0.03] border border-white/5">
+                  <div><h4 className="text-sm font-semibold text-white">App updates</h4>
+                    <p className="text-xs text-slate-400">{updateState.version ? `Version ${updateState.version}` : 'Desktop app only'}</p>
+                    <p role="status" className="text-xs text-slate-400 mt-1">{{ unavailable: 'Updates are available in installed Windows builds only.', idle: 'Check for a new version.', checking: 'Checking for updates…', downloading: 'Downloading update…', 'not-available': 'You are up to date.', ready: 'Update ready. Restart to install', error: 'Could not check for updates. Please try again.' }[updateState.status]}</p>
+                  </div>
+                  <button type="button" onClick={onCheckUpdates} disabled={['unavailable', 'checking', 'downloading', 'ready'].includes(updateState.status)} className="px-3 py-2 rounded-full bg-white/10 text-white text-xs font-semibold disabled:opacity-40">Check for updates</button>
+                </div>
                 <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.03] border border-white/5">
                   <div>
                     <h4 className="text-sm font-semibold text-white">Dynamic Accent Switching</h4>

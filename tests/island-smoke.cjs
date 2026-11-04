@@ -8,7 +8,7 @@ const root = path.resolve(__dirname, '..');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'island-smoke-'));
 const windows = [];
 const app = new EventEmitter();
-Object.assign(app, { isPackaged: false, setName(){}, setAppUserModelId(){}, whenReady: async () => {}, getAppPath: () => root, getPath: () => temp, quit() { this.emit('before-quit'); } });
+Object.assign(app, { isPackaged: false, setName(){}, setAppUserModelId(){}, whenReady: async () => {}, getAppPath: () => root, getVersion: () => '0.0.0', getPath: () => temp, quit() { this.emit('before-quit'); } });
 let shortcut, tray, child;
 class Window extends EventEmitter {
   constructor(options) { super(); this.options=options; this.bounds={ x:options.x || 0,y:options.y || 0,width:options.width,height:options.height }; this.visible=false; this.webContents=new EventEmitter(); this.sent=[]; this.webContents.send=(...args)=>this.sent.push(args); windows.push(this); }

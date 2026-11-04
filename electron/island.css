@@ -15,3 +15,7 @@ html, body { margin:0; width:100%; height:100%; overflow:hidden; background:tran
 .approval .approval-content { display:flex; align-items:center; gap:8px; }.approval-content div { flex:1; min-width:0; }.approval-content strong,.approval-content div span { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }.approval-content strong { font-size:12px; }.approval-content div span { color:#aab6d2; font-size:11px; margin-top:3px; }.approval-content button { border:0; border-radius:999px; padding:8px 12px; font:600 11px 'Segoe UI', sans-serif; cursor:pointer; color:#0A1020; background:#B5DEFF; }.approval-content button:last-child { color:white; background:#30384a; }.approval-content button:focus-visible { outline:2px solid white; }
 @keyframes wave { to { height:19px; } } @keyframes progress { to { transform:translateX(150%); } } @keyframes appear { from { opacity:0; } to { opacity:1; } }
 @media(prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+
+.update .update-content { display:flex; align-items:center; gap:10px; justify-content:space-between; font-size:11px; font-weight:600; white-space:nowrap; }
+.update-content button { border:0; border-radius:999px; padding:8px 12px; font:600 11px 'Segoe UI', sans-serif; cursor:pointer; color:#0A1020; background:#B5DEFF; }
+.update-content button:focus-visible { outline:2px solid white; }

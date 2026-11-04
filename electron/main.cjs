@@ -1,19 +1,20 @@
-const { app, BrowserWindow, dialog, utilityProcess, Tray, Menu, nativeImage, globalShortcut, screen, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, dialog, utilityProcess, Tray, Menu, nativeImage, globalShortcut, screen, ipcMain, safeStorage, autoUpdater: electronAutoUpdater } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { createVault } = require('./key-vault.cjs');
+const { createUpdateController } = require('./update-controller.cjs');
 const { setTimeout: delay } = require('node:timers/promises');
 
 const SERVER_PORT = 3737;
 const SERVER_HOST = '127.0.0.1';
 const APP_URL = `http://${SERVER_HOST}:${SERVER_PORT}`;
-const ISLAND_SIZES = { resting: [132, 40], listening: [260, 44], working: [380, 52], approval: [440, 72] };
+const ISLAND_SIZES = { resting: [132, 40], listening: [260, 44], working: [380, 52], approval: [440, 72], update: [360, 52] };
 let serverProcess, serverExitError, mainWindow, islandWindow, tray;
 let quitting = false;
 let failureReported = false;
 let islandState = 'resting';
 let islandPosition;
-let resizeTimer, saveTimer, dragOrigin, vault;
+let resizeTimer, saveTimer, dragOrigin, vault, updateController;
 
 app.setName('Hanex & Shumex');
 app.setAppUserModelId('com.itsmehanan.hanexshumex');
@@ -91,6 +92,7 @@ function toggleMain() {
 }
 
 function setIslandState(state) {
+  if (updateController?.getState().status === 'ready') state = 'update';
   if (!Object.hasOwn(ISLAND_SIZES, state) || !islandWindow || islandWindow.isDestroyed()) return;
   islandState = state;
   islandWindow.webContents.send('island:state', state);
@@ -129,6 +131,7 @@ function setupIsland() {
 }
 function validIslandSender(event) { return islandWindow && !islandWindow.isDestroyed() && event.sender === islandWindow.webContents; }
 function setupIslandIpc() {
+  ipcMain.on('island:restart-update', event => { if (validIslandSender(event) && event.senderFrame === islandWindow.webContents.mainFrame) updateController?.restart(); });
   ipcMain.on('island:open', event => { if (validIslandSender(event)) showMain(); });
   ipcMain.on('island:decision', (event, choice) => {
     if (!validIslandSender(event) || islandState !== 'approval' || !['approve', 'deny'].includes(choice)) return;
@@ -189,6 +192,24 @@ async function startDesktop() {
     if (!trustedChat(event)) throw new Error('Unauthorized key request.');
     return action(...args);
   });
+  for (const [channel, action] of Object.entries({
+    'updates:status': () => updateController.getState(),
+    'updates:check': () => updateController.check(),
+    'updates:restart': () => updateController.restart(),
+  })) ipcMain.handle(channel, (event) => {
+    if (!trustedChat(event)) throw new Error('Unauthorized update request.');
+    return action();
+  });
+  let updater = null;
+  if (app.isPackaged && process.platform === 'win32') {
+    try { updater = require(path.join(app.getAppPath(), 'dist-electron', 'updater.cjs')).autoUpdater; }
+    catch (error) { console.error('Could not initialize updates:', error.message); }
+  }
+  updateController = createUpdateController({ app, updater, onChange: state => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updates:state', state);
+    if (state.status === 'ready') setIslandState('update');
+  } });
+  electronAutoUpdater?.on('before-quit-for-update', () => { quitting = true; });
   setupIslandIpc();
   setupIsland();
   setupTray();
@@ -228,11 +249,13 @@ async function startDesktop() {
   mainWindow.on('close', event => { if (!quitting) { event.preventDefault(); hideMain(); } });
   mainWindow.on('minimize', event => { event.preventDefault(); hideMain(); });
   mainWindow.on('closed', () => { mainWindow = null; });
+  updateController.start();
   await mainWindow.loadURL(APP_URL);
 }
 app.on('before-quit', () => {
   quitting = true;
   clearInterval(resizeTimer);
+  updateController?.stop();
   clearTimeout(saveTimer);
   savePosition();
   globalShortcut.unregisterAll();

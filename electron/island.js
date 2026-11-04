@@ -1,7 +1,7 @@
 const root = document.getElementById('island');
 let pointerStart, moved = false;
 window.island.onState(state => {
-  if (['resting', 'listening', 'working', 'approval'].includes(state)) root.className = `island ${state}`;
+  if (['resting', 'listening', 'working', 'approval', 'update'].includes(state)) root.className = `island ${state}`;
 });
 root.addEventListener('pointerdown', event => {
   if (event.button !== 0 || event.target.closest('button')) return;
@@ -25,3 +25,5 @@ root.addEventListener('pointercancel', () => { if (pointerStart) window.island.d
 root.addEventListener('keydown', event => { if (event.target === root && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); window.island.open(); } });
 document.getElementById('approve').addEventListener('click', () => window.island.decision('approve'));
 document.getElementById('deny').addEventListener('click', () => window.island.decision('deny'));
+
+document.getElementById('restart-update').addEventListener('click', () => window.island.restartUpdate());

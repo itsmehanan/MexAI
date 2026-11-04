@@ -135,6 +135,13 @@ export default function App() {
   });
 
   // Backend status & available environment keys
+  const [updateState, setUpdateState] = useState<DesktopUpdateState>({ version: '', status: 'unavailable' });
+  useEffect(() => {
+    if (!window.desktopUpdates) return;
+    const unsubscribe = window.desktopUpdates.onState(setUpdateState);
+    window.desktopUpdates.status().then(setUpdateState).catch(() => {});
+    return unsubscribe;
+  }, []);
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
   const [keyStorageError, setKeyStorageError] = useState('');
   const [settingsReady, setSettingsReady] = useState(false);
@@ -639,6 +646,11 @@ export default function App() {
         onRefreshOllama={() => fetchOllamaModels()}
       />
 
+      {updateState.status === 'ready' && <div role="status" className="flex items-center justify-center gap-3 px-4 py-2 bg-[#1d3046] text-sm text-white">
+        <span>Update ready. Restart to install</span>
+        <button type="button" onClick={() => window.desktopUpdates?.restart()} className="rounded-full bg-[#B5DEFF] text-[#0A1020] px-4 py-1 text-xs font-bold">Restart</button>
+        {updateState.restartError && <span className="text-xs text-amber-200">{updateState.restartError}</span>}
+      </div>}
       {/* Main Desktop Container: Sidebar + Chat Area */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
@@ -731,6 +743,8 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onSaveSettings={handleSaveSettings}
+        updateState={updateState}
+        onCheckUpdates={() => window.desktopUpdates?.check().then(setUpdateState).catch(() => {})}
         savedKeys={savedKeys}
         secureStorageAvailable={Boolean(window.secureKeys) && settingsReady}
         keyStorageError={keyStorageError}
