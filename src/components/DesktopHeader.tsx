@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { AgentId, AgentProfile, ProviderId, ProviderSettings, ModelOption, AgentModelSelection } from '../types';
 import { AGENTS } from '../data/agents';
-import { PROVIDERS_META, DEFAULT_PROVIDER_MODELS } from '../data/models';
+import { PROVIDERS_META, DEFAULT_PROVIDER_MODELS, getOpenRouterModels } from '../data/models';
 import { Avatar } from './Avatar';
 
 interface DesktopHeaderProps {
@@ -88,11 +88,8 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
     if (p === 'ollama') {
       return ollamaModels.length > 0 ? ollamaModels : DEFAULT_PROVIDER_MODELS.ollama;
     }
-    const list = DEFAULT_PROVIDER_MODELS[p] || [];
-    if (p === 'openrouter' && openRouterFreeOnly) {
-      return list.filter((m) => m.isFree);
-    }
-    return list;
+    if (p === 'openrouter') return getOpenRouterModels(providers.openrouter?.openRouterModelId, openRouterFreeOnly, selectedModel.provider === 'openrouter' ? selectedModel.model : undefined);
+    return DEFAULT_PROVIDER_MODELS[p] || [];
   };
 
   // Find current model's display name

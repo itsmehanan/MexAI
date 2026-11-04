@@ -330,6 +330,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         {/* Input & Testing Controls when Enabled */}
                         {isEnabled && (
                           <div className="space-y-3 pt-2 border-t border-white/5">
+                            {id === 'openrouter' && <div>
+                              <label className="block text-xs text-slate-300">OpenRouter model ID<input aria-label="OpenRouter model ID" value={provConfig.openRouterModelId ?? 'openrouter/free'} onChange={e => handleUpdateProvider(id, { openRouterModelId: e.target.value })} placeholder="openrouter/free" className="mt-1 w-full bg-[#0a0f1c] border border-white/15 rounded-xl px-3 py-2 text-xs text-white" /></label>
+                              <p className="mt-1 text-xs text-slate-400">This ID appears in the chat model menu even when Free Models Only is on. Check OpenRouter pricing before selecting it.</p>
+                            </div>}
                             {id === 'custom' && <div className="space-y-2">
                               <label className="block text-xs text-slate-300">Provider name<input aria-label="Custom provider name" value={provConfig.customName || ''} onChange={e => handleUpdateProvider(id, { customName: e.target.value })} className="mt-1 w-full bg-[#0a0f1c] border border-white/15 rounded-xl px-3 py-2 text-xs text-white" /></label>
                               <label className="block text-xs text-slate-300">Model name<input aria-label="Custom model name" value={provConfig.customModel || ''} onChange={e => handleUpdateProvider(id, { customModel: e.target.value })} className="mt-1 w-full bg-[#0a0f1c] border border-white/15 rounded-xl px-3 py-2 text-xs text-white" /></label>

@@ -50,7 +50,7 @@ const DEFAULT_PROVIDERS: Record<ProviderId, ProviderSettings> = {
   gemini: { id: 'gemini', enabled: true, apiKey: '' },
   openai: { id: 'openai', enabled: false, apiKey: '' },
   anthropic: { id: 'anthropic', enabled: false, apiKey: '' },
-  openrouter: { id: 'openrouter', enabled: false, apiKey: '' },
+  openrouter: { id: 'openrouter', enabled: false, apiKey: '', openRouterModelId: 'openrouter/free' },
   custom: { id: 'custom', enabled: false, apiKey: '', baseUrl: '', customName: 'Custom', customModel: '' },
   ollama: { id: 'ollama', enabled: false, apiKey: '', baseUrl: 'http://localhost:11434' },
 };

@@ -18,6 +18,7 @@ export interface ProviderSettings {
   baseUrl?: string;
   customName?: string;
   customModel?: string;
+  openRouterModelId?: string;
   freeOnlyFilter?: boolean; // for OpenRouter
 }
 

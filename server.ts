@@ -240,7 +240,7 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: model || 'meta-llama/llama-3.3-70b-instruct:free',
+          model: model || 'openrouter/free',
           messages: [{ role: 'user', content: 'Ping test. Reply with OK.' }],
           max_tokens: 10,
         }),
@@ -253,7 +253,7 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
       res.json({
         valid: true,
         reply: redact(data.choices?.[0]?.message?.content?.trim() || 'OK', resolvedKey),
-        model: model || 'meta-llama/llama-3.3-70b-instruct:free',
+        model: model || 'openrouter/free',
       });
       return;
     }
@@ -662,7 +662,7 @@ async function* streamProvider(
       yield* streamAnthropic(key, model || 'claude-3-7-sonnet-20250219', messages, systemInstruction);
       break;
     case 'openrouter':
-      yield* streamOpenRouter(key, model || 'meta-llama/llama-3.3-70b-instruct:free', messages, systemInstruction);
+      yield* streamOpenRouter(key, model || 'openrouter/free', messages, systemInstruction);
       break;
     case 'ollama':
       yield* streamOllama(providerConfig?.baseUrl || 'http://localhost:11434', model || 'llama3.2', messages, systemInstruction);

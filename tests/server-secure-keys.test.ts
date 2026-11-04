@@ -60,6 +60,13 @@ test('server requests vault keys directly and redacts split streamed responses',
       assert(output.includes('"provider":"custom"'));
       assert(output.includes('"model":"backup"'));
     }
+    scenario = 'normal'; requests.length = 0;
+    await post('/api/chat/stream', { provider: 'openrouter', model: 'qwen/qwen3-coder:free', messages: [{ role: 'user', content: 'hello' }] });
+    assert.equal(requests[0].url, 'https://openrouter.ai/api/v1/chat/completions');
+    assert.equal(requests[0].model, 'qwen/qwen3-coder:free');
+    requests.length = 0;
+    await post('/api/chat/stream', { provider: 'openrouter', messages: [{ role: 'user', content: 'hello' }] });
+    assert.equal(requests[0].model, 'openrouter/free');
     scenario = 'bad'; requests.length = 0;
     const rejected = await post('/api/chat/stream', { provider: 'openai', model: 'primary', messages: [], fallbacks: [{ provider: 'custom', model: 'backup' }] });
     assert.deepEqual(requests.map(r => r.model), ['primary']);
