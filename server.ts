@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import type { Server } from 'http';
+import { randomUUID } from 'node:crypto';
 import { GoogleGenAI } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -36,25 +37,51 @@ Personality & Demeanor:
 
 export type ProviderType = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama';
 
-function formatErrorMessage(err: any): string {
+function redact(value: string, secret?: string): string { return secret ? value.split(secret).join('[redacted]') : value; }
+
+function formatErrorMessage(err: any, secret?: string): string {
   if (!err) return 'Unknown error occurred.';
   let message = err.message || String(err);
   try {
     const parsed = JSON.parse(message);
     if (parsed.error?.message) {
-      return parsed.error.message;
+      return secret ? String(parsed.error.message).split(secret).join('[redacted]') : parsed.error.message;
     }
     if (parsed.error && typeof parsed.error === 'string') {
-      return parsed.error;
+      return secret ? parsed.error.split(secret).join('[redacted]') : parsed.error;
     }
   } catch (jsonErr) {
-    console.warn('formatErrorMessage: Failed to parse error JSON payload:', jsonErr);
+    // Ordinary error messages are not JSON.
   }
-  return message;
+  return secret ? String(message).split(secret).join('[redacted]') : message;
 }
 
-function resolveApiKey(provider: ProviderType, customKey?: string): string {
-  const custom = customKey?.trim();
+const keyPort = (process as any).parentPort;
+const pendingKeys = new Map<string, { resolve: (key: string) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+if (process.env.MEXAI_SECURE_KEYS === '1' && keyPort) {
+  keyPort.on('message', (event: any) => {
+    const message = event.data;
+    if (message?.type !== 'secure-key-response') return;
+    const pending = pendingKeys.get(message.id);
+    if (!pending) return;
+    pendingKeys.delete(message.id);
+    clearTimeout(pending.timer);
+    if (message.error) pending.reject(new Error('Secure key storage is unavailable.'));
+    else pending.resolve(typeof message.key === 'string' ? message.key : '');
+  });
+}
+async function secureKey(provider: ProviderType): Promise<string> {
+  if (!keyPort) throw new Error('Secure key storage is unavailable.');
+  const id = randomUUID();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { pendingKeys.delete(id); reject(new Error('Secure key storage timed out.')); }, 5000);
+    pendingKeys.set(id, { resolve, reject, timer });
+    keyPort.postMessage({ type: 'secure-key-request', id, provider });
+  });
+}
+async function resolveApiKey(provider: ProviderType, customKey?: string): Promise<string> {
+  const custom = process.env.MEXAI_SECURE_KEYS === '1' && provider !== 'ollama'
+    ? await secureKey(provider) : customKey?.trim();
   if (custom) return custom;
 
   switch (provider) {
@@ -125,7 +152,9 @@ app.post('/api/providers/ollama/models', async (req: Request, res: Response) => 
 app.post('/api/providers/test', async (req: Request, res: Response) => {
   const { provider, apiKey, baseUrl, model } = req.body;
   const p = (provider || 'gemini') as ProviderType;
-  const resolvedKey = resolveApiKey(p, apiKey);
+  let resolvedKey: string;
+  try { resolvedKey = await resolveApiKey(p, apiKey); }
+  catch { res.status(503).json({ valid: false, error: 'Secure key storage is unavailable.' }); return; }
 
   if (p !== 'ollama' && !resolvedKey) {
     res.status(400).json({
@@ -145,7 +174,7 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
         model: model || 'gemini-3.8-flash',
         contents: 'Ping test. Reply with OK.',
       });
-      res.json({ valid: true, reply: result.text?.trim() || 'OK', model: model || 'gemini-3.8-flash' });
+      res.json({ valid: true, reply: redact(result.text?.trim() || 'OK', resolvedKey), model: model || 'gemini-3.8-flash' });
       return;
     }
 
@@ -167,7 +196,7 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
         throw new Error(errJson.error?.message || `OpenAI returned status ${resp.status}`);
       }
       const data: any = await resp.json();
-      res.json({ valid: true, reply: data.choices?.[0]?.message?.content?.trim() || 'OK', model: model || 'gpt-4o-mini' });
+      res.json({ valid: true, reply: redact(data.choices?.[0]?.message?.content?.trim() || 'OK', resolvedKey), model: model || 'gpt-4o-mini' });
       return;
     }
 
@@ -190,7 +219,7 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
         throw new Error(errJson.error?.message || `Anthropic returned status ${resp.status}`);
       }
       const data: any = await resp.json();
-      const reply = data.content?.[0]?.text?.trim() || 'OK';
+      const reply = redact(data.content?.[0]?.text?.trim() || 'OK', resolvedKey);
       res.json({ valid: true, reply, model: model || 'claude-3-5-haiku-20241022' });
       return;
     }
@@ -217,7 +246,7 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
       const data: any = await resp.json();
       res.json({
         valid: true,
-        reply: data.choices?.[0]?.message?.content?.trim() || 'OK',
+        reply: redact(data.choices?.[0]?.message?.content?.trim() || 'OK', resolvedKey),
         model: model || 'meta-llama/llama-3.3-70b-instruct:free',
       });
       return;
@@ -241,18 +270,19 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
 
     res.status(400).json({ valid: false, error: `Unsupported provider: ${provider}` });
   } catch (err: any) {
-    console.warn(`Test connection failed for ${p}:`, err);
+    console.warn(`Test connection failed for ${p}.`);
     res.status(400).json({
       valid: false,
-      error: formatErrorMessage(err),
+      error: formatErrorMessage(err, resolvedKey),
     });
   }
 });
 
 // Legacy validate-key endpoint (compatibility with existing UI)
 app.post('/api/validate-key', async (req: Request, res: Response) => {
-  const customKey = req.body.apiKey?.trim();
-  const keyToTest = customKey || process.env.GEMINI_API_KEY;
+  let keyToTest: string;
+  try { keyToTest = await resolveApiKey('gemini', req.body.apiKey); }
+  catch { res.status(503).json({ valid: false, error: 'Secure key storage is unavailable.' }); return; }
 
   if (!keyToTest) {
     res.status(400).json({ valid: false, error: 'No API key provided to test.' });
@@ -268,11 +298,11 @@ app.post('/api/validate-key', async (req: Request, res: Response) => {
       model: 'gemini-3.8-flash',
       contents: 'Ping test. Reply with simply "OK".',
     });
-    res.json({ valid: true, reply: result.text?.trim() || 'OK' });
+    res.json({ valid: true, reply: redact(result.text?.trim() || 'OK', keyToTest) });
   } catch (err: any) {
     res.status(400).json({
       valid: false,
-      error: formatErrorMessage(err),
+      error: formatErrorMessage(err, keyToTest),
     });
   }
 });
@@ -600,9 +630,9 @@ async function* streamProvider(
   model: string,
   messages: any[],
   systemInstruction: string,
-  providerConfig?: { apiKey?: string; baseUrl?: string }
+  providerConfig?: { apiKey?: string; baseUrl?: string },
+  key: string = ''
 ): AsyncGenerator<string> {
-  const key = resolveApiKey(provider, providerConfig?.apiKey);
 
   if (provider !== 'ollama' && !key) {
     throw new Error(
@@ -644,7 +674,9 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
     baseUrl: providerConfig?.baseUrl,
   };
 
-  const key = resolveApiKey(p, effectiveConfig.apiKey);
+  let key: string;
+  try { key = await resolveApiKey(p, effectiveConfig.apiKey); }
+  catch { res.status(503).json({ error: 'Secure key storage is unavailable.' }); return; }
   if (p !== 'ollama' && !key) {
     res.status(400).json({
       error: `API key for ${p.toUpperCase()} is missing. Please add it in Settings.`,
@@ -659,16 +691,25 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
   try {
     let totalTextLength = 0;
     let chunkCount = 0;
+    let pendingText = '';
 
-    const generator = streamProvider(p, model, messages || [], systemInstruction, effectiveConfig);
+    const generator = streamProvider(p, model, messages || [], systemInstruction, effectiveConfig, key);
 
+    const emitText = (text: string) => {
+      if (!text) return;
+      chunkCount++;
+      totalTextLength += text.length;
+      res.write(`data: ${JSON.stringify({ text })}\n\n`);
+    };
     for await (const textChunk of generator) {
-      if (textChunk) {
-        chunkCount++;
-        totalTextLength += textChunk.length;
-        res.write(`data: ${JSON.stringify({ text: textChunk })}\n\n`);
-      }
+      pendingText += textChunk;
+      if (key && pendingText.includes(key)) pendingText = redact(pendingText, key);
+      // Retain a suffix so a key split across provider chunks is never sent to the UI.
+      const safeLength = key ? Math.max(0, pendingText.length - key.length + 1) : pendingText.length;
+      emitText(pendingText.slice(0, safeLength));
+      pendingText = pendingText.slice(safeLength);
     }
+    emitText(redact(pendingText, key));
 
     console.log(`[Stream Complete] Provider: ${p}, Model: ${model}, Chunks: ${chunkCount}, TotalLength: ${totalTextLength}`);
 
@@ -684,10 +725,10 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
     }
     res.end();
   } catch (error: any) {
-    console.error(`Error in streaming chat [${p}]:`, error);
+    console.error(`Error in streaming chat [${p}].`);
     res.write(
       `data: ${JSON.stringify({
-        error: formatErrorMessage(error),
+        error: formatErrorMessage(error, key),
       })}\n\n`
     );
     res.end();
@@ -706,7 +747,9 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     baseUrl: providerConfig?.baseUrl,
   };
 
-  const key = resolveApiKey(p, effectiveConfig.apiKey);
+  let key: string;
+  try { key = await resolveApiKey(p, effectiveConfig.apiKey); }
+  catch { res.status(503).json({ error: 'Secure key storage is unavailable.' }); return; }
   if (p !== 'ollama' && !key) {
     res.status(400).json({
       error: `API key for ${p.toUpperCase()} is missing. Please add it in Settings.`,
@@ -716,7 +759,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
 
   try {
     let accumulatedText = '';
-    const generator = streamProvider(p, model, messages || [], systemInstruction, effectiveConfig);
+    const generator = streamProvider(p, model, messages || [], systemInstruction, effectiveConfig, key);
 
     for await (const textChunk of generator) {
       if (textChunk) {
@@ -732,12 +775,12 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     }
 
     res.json({
-      text: accumulatedText,
+      text: redact(accumulatedText, key),
     });
   } catch (error: any) {
-    console.error(`Error in non-streaming chat [${p}]:`, error);
+    console.error(`Error in non-streaming chat [${p}].`);
     res.status(500).json({
-      error: formatErrorMessage(error),
+      error: formatErrorMessage(error, key),
     });
   }
 });

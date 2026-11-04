@@ -30,3 +30,9 @@ npm run electron:build
 ```
 
 The x64 NSIS installer is written to `release\Hanex-Shumex-Setup-0.0.0.exe`. Run it to install the app. The installed app includes Electron and the server; end users do **not** need Node.js, npm, or a separate terminal. The first build downloads Electron and packaging tools from the internet. The installer is unsigned unless you configure your own code-signing certificate.
+
+### API keys
+
+In the Electron app, save provider keys in Settings. Electron's `safeStorage` encrypts them using the operating system's secure storage; Settings displays only a mask and can replace or remove a key. The server receives decrypted keys directly from the Electron main process, not from the chat UI. Existing desktop keys in this app's browser storage are migrated on launch and removed from that storage only after secure saving succeeds. If secure storage is unavailable, migration is not performed and the original data is retained; resolve the OS secure-storage issue and reopen the app.
+
+The browser version cannot use Electron safeStorage and no longer saves keys in browser storage. Configure server-side environment variables for the web version. Browser and desktop local storage have separate origins, so legacy keys saved in a browser cannot be migrated automatically by the desktop app: remove them from that browser's site storage after moving them to the desktop Settings or environment variables. Keys already present in a `.env` file remain there; safeStorage does not encrypt that file.

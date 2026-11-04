@@ -35,6 +35,11 @@ interface SettingsModalProps {
   onResetAllData: () => void;
   onExportAll: () => void;
   hasEnvKey: boolean;
+  savedKeys: Record<string, boolean>;
+  secureStorageAvailable: boolean;
+  keyStorageError: string;
+  onSaveKey: (id: ProviderId, key: string) => Promise<void>;
+  onRemoveKey: (id: ProviderId) => Promise<void>;
   envKeys?: Record<string, boolean>;
   onRefreshOllama?: () => void;
   isFetchingOllama?: boolean;
@@ -50,19 +55,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onResetAllData,
   onExportAll,
   hasEnvKey,
+  savedKeys, secureStorageAvailable, keyStorageError, onSaveKey, onRemoveKey,
   envKeys = {},
   onRefreshOllama,
   isFetchingOllama = false,
   ollamaModelsCount = 0,
 }) => {
   const [activeTab, setActiveTab] = useState<'models' | 'voice' | 'general' | 'data'>('models');
-  const [showKeys, setShowKeys] = useState<Record<ProviderId, boolean>>({
-    gemini: false,
-    openai: false,
-    anthropic: false,
-    openrouter: false,
-    ollama: false,
-  });
+  const [draftKeys, setDraftKeys] = useState<Record<string, string>>({});
+  const [keyMessage, setKeyMessage] = useState<Record<string, string>>({});
 
   const [testStates, setTestStates] = useState<
     Record<ProviderId, { status: 'idle' | 'testing' | 'success' | 'error'; message: string }>
@@ -75,10 +76,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   });
 
   if (!isOpen) return null;
-
-  const toggleShowKey = (p: ProviderId) => {
-    setShowKeys((prev) => ({ ...prev, [p]: !prev[p] }));
-  };
 
   const handleUpdateProvider = (id: ProviderId, updates: Partial<ProviderSettings>) => {
     const current = settings.providers[id] || {
@@ -94,19 +91,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     onSaveSettings({ providers: updatedProviders });
   };
 
-  const handlePasteKey = async (id: ProviderId) => {
+  const saveKey = async (id: ProviderId) => {
     try {
-      const text = await navigator.clipboard.readText();
-      if (text) {
-        if (id === 'ollama') {
-          handleUpdateProvider(id, { baseUrl: text.trim() });
-        } else {
-          handleUpdateProvider(id, { apiKey: text.trim() });
-        }
-      }
-    } catch {
-      // Clipboard denied
-    }
+      await onSaveKey(id, draftKeys[id] || '');
+      setDraftKeys(prev => ({ ...prev, [id]: '' }));
+      setKeyMessage(prev => ({ ...prev, [id]: 'Key securely saved.' }));
+    } catch { setKeyMessage(prev => ({ ...prev, [id]: 'Could not save key securely. Existing key was not changed.' })); }
+  };
+  const removeKey = async (id: ProviderId) => {
+    try { await onRemoveKey(id); setDraftKeys(prev => ({ ...prev, [id]: '' })); setKeyMessage(prev => ({ ...prev, [id]: 'Key removed.' })); }
+    catch { setKeyMessage(prev => ({ ...prev, [id]: 'Could not remove key.' })); }
   };
 
   const handleTestConnection = async (id: ProviderId) => {
@@ -122,7 +116,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider: id,
-          apiKey: prov.apiKey,
           baseUrl: prov.baseUrl || 'http://localhost:11434',
         }),
       });
@@ -230,7 +223,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       Connected AI Providers
                     </h3>
                     <p className="text-xs text-slate-400">
-                      Enable providers, paste keys, and test connections. Keys remain securely on your device.
+                      Desktop keys are encrypted by the operating system and never displayed after saving. In a browser, configure keys via server environment variables.
                     </p>
                   </div>
 
@@ -253,6 +246,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   )}
                 </div>
 
+                {keyStorageError && <p role="alert" className="text-xs text-amber-300">{keyStorageError}</p>}
                 <div className="space-y-3">
                   {providerList.map((id) => {
                     const meta = PROVIDERS_META[id];
@@ -327,46 +321,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 <span className="text-[10px] text-slate-500">{meta.keyHelp}</span>
                               </div>
 
-                              <div className="relative">
-                                <input
-                                  type={isOllama || showKeys[id] ? 'text' : 'password'}
-                                  value={isOllama ? provConfig.baseUrl || 'http://localhost:11434' : provConfig.apiKey || ''}
-                                  onChange={(e) => {
-                                    if (isOllama) {
-                                      handleUpdateProvider(id, { baseUrl: e.target.value });
-                                    } else {
-                                      handleUpdateProvider(id, { apiKey: e.target.value });
-                                    }
-                                    setTestStates((prev) => ({
-                                      ...prev,
-                                      [id]: { status: 'idle', message: '' },
-                                    }));
-                                  }}
-                                  placeholder={meta.keyPlaceholder}
-                                  className="w-full bg-[#0a0f1c] border border-white/15 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 rounded-xl px-3.5 py-2 text-xs font-mono text-white placeholder:text-slate-600 focus:outline-none transition"
-                                />
-
-                                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                                  {!isOllama && (
-                                    <button
-                                      type="button"
-                                      onClick={() => toggleShowKey(id)}
-                                      className="p-1 text-slate-400 hover:text-white transition cursor-pointer"
-                                      title={showKeys[id] ? 'Hide' : 'Show'}
-                                    >
-                                      {showKeys[id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                                    </button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={() => handlePasteKey(id)}
-                                    className="p-1 text-slate-400 hover:text-white transition cursor-pointer"
-                                    title="Paste from clipboard"
-                                  >
-                                    <ClipboardPaste className="w-3.5 h-3.5" />
-                                  </button>
+                              {isOllama ? (
+                                <input type="text" value={provConfig.baseUrl || 'http://localhost:11434'} onChange={e => handleUpdateProvider(id, { baseUrl: e.target.value })} className="w-full bg-[#0a0f1c] border border-white/15 rounded-xl px-3.5 py-2 text-xs text-white" />
+                              ) : (
+                                <div className="space-y-2">
+                                  <input type="password" autoComplete="off" value={draftKeys[id] || ''} onChange={e => setDraftKeys(prev => ({ ...prev, [id]: e.target.value }))} disabled={!secureStorageAvailable} placeholder={savedKeys[id] ? '•••••••• (saved) — enter a new key to replace' : 'Enter API key'} aria-label={`${meta.name} API key`} className="w-full bg-[#0a0f1c] border border-white/15 focus:border-cyan-400 rounded-xl px-3.5 py-2 text-xs font-mono text-white placeholder:text-slate-500 disabled:opacity-50" />
+                                  <div className="flex items-center gap-2">
+                                    <button type="button" disabled={!secureStorageAvailable || !draftKeys[id]?.trim()} onClick={() => saveKey(id)} className="px-3 py-1.5 rounded-full bg-cyan-600 text-white text-xs disabled:opacity-40">Save key</button>
+                                    {savedKeys[id] && <button type="button" disabled={!secureStorageAvailable} onClick={() => removeKey(id)} className="px-3 py-1.5 rounded-full bg-white/10 text-white text-xs disabled:opacity-40">Remove key</button>}
+                                    <span className="text-xs text-slate-400">{keyMessage[id] || (savedKeys[id] ? '•••••••• saved' : !secureStorageAvailable ? 'Desktop secure storage required' : 'Not saved')}</span>
+                                  </div>
                                 </div>
-                              </div>
+                              )}
                             </div>
 
                             {/* Test Results Banner */}

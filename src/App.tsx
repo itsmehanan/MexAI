@@ -40,6 +40,7 @@ import { TypingIndicator } from './components/TypingIndicator';
 import { SettingsModal } from './components/SettingsModal';
 import { QuickSwitcherModal } from './components/QuickSwitcherModal';
 import { Avatar } from './components/Avatar';
+import { migrateSavedKeys } from './utils/key-migration';
 
 const STORAGE_KEY_SETTINGS = 'hanex_shumex_settings_v2';
 const STORAGE_KEY_MESSAGES = 'hanex_shumex_messages_v2';
@@ -118,9 +119,10 @@ export default function App() {
         return {
           ...DEFAULT_SETTINGS,
           ...parsed,
+          apiKey: '',
           providers: {
             ...DEFAULT_PROVIDERS,
-            ...(parsed.providers || {}),
+            ...Object.fromEntries(Object.entries(parsed.providers || {}).map(([id, value]: [string, any]) => [id, { ...value, apiKey: '' }])) ,
           },
         };
       }
@@ -131,6 +133,9 @@ export default function App() {
   });
 
   // Backend status & available environment keys
+  const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
+  const [keyStorageError, setKeyStorageError] = useState('');
+  const [settingsReady, setSettingsReady] = useState(false);
   const [hasEnvKey, setHasEnvKey] = useState(false);
   const [envKeys, setEnvKeys] = useState<Record<string, boolean>>({});
 
@@ -213,14 +218,38 @@ export default function App() {
     }
   }, [messages]);
 
-  // Save settings to localStorage
+  // Move old renderer keys to the vault before replacing the legacy settings record.
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
-    } catch (e) {
-      console.warn('Failed to save settings', e);
-    }
-  }, [settings]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await migrateSavedKeys(localStorage, STORAGE_KEY_SETTINGS, window.secureKeys);
+        if (cancelled) return;
+        setSavedKeys(status);
+        setSettingsReady(true);
+      } catch {
+        if (!cancelled) setKeyStorageError('Secure key storage or migration is unavailable. Existing saved data was left untouched; reopen the app after resolving the issue.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsReady) return;
+    try { localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings)); }
+    catch (e) { console.warn('Failed to save settings', e); }
+  }, [settings, settingsReady]);
+
+  const saveSecureKey = async (provider: ProviderId, key: string) => {
+    if (!window.secureKeys || !settingsReady) throw new Error('Secure key storage is unavailable.');
+    await window.secureKeys.save(provider, key);
+    setSavedKeys(prev => ({ ...prev, [provider]: true }));
+  };
+  const removeSecureKey = async (provider: ProviderId) => {
+    if (!window.secureKeys || !settingsReady) throw new Error('Secure key storage is unavailable.');
+    await window.secureKeys.remove(provider);
+    setSavedKeys(prev => ({ ...prev, [provider]: false }));
+  };
 
   // Scroll to bottom helper
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
@@ -312,7 +341,6 @@ export default function App() {
         content: m.content,
       })),
       providerConfig: {
-        apiKey: providerConfig.apiKey,
         baseUrl: providerConfig.baseUrl,
       },
     };
@@ -594,7 +622,17 @@ export default function App() {
   };
 
   // Reset all data
-  const handleResetAllData = () => {
+  const handleResetAllData = async () => {
+    try {
+      if (!settingsReady) throw new Error('Secure migration must complete before resetting data.');
+      if (window.secureKeys) {
+        await window.secureKeys.clear();
+        setSavedKeys({});
+      }
+    } catch {
+      setKeyStorageError('Could not remove secure keys. Reset was cancelled.');
+      return;
+    }
     setMessages(INITIAL_MESSAGES);
     setSettings(DEFAULT_SETTINGS);
     setAgentModels(DEFAULT_AGENT_MODELS);
@@ -607,7 +645,7 @@ export default function App() {
   const currentProviderConfig = settings.providers[activeModelSelection.provider];
   const isCurrentProviderKeyMissing =
     activeModelSelection.provider !== 'ollama' &&
-    !currentProviderConfig?.apiKey?.trim() &&
+    !savedKeys[activeModelSelection.provider] &&
     !envKeys[activeModelSelection.provider];
 
   return (
@@ -721,6 +759,11 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onSaveSettings={handleSaveSettings}
+        savedKeys={savedKeys}
+        secureStorageAvailable={Boolean(window.secureKeys) && settingsReady}
+        keyStorageError={keyStorageError}
+        onSaveKey={saveSecureKey}
+        onRemoveKey={removeSecureKey}
         onClearAgentChat={handleClearChat}
         onResetAllData={handleResetAllData}
         onExportAll={handleExportAll}

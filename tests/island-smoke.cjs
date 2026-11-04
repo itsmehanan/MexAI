@@ -19,9 +19,12 @@ class Window extends EventEmitter {
 }
 class Tray extends EventEmitter { constructor(){super();tray=this;} setToolTip(){} setContextMenu(menu){this.menu=menu;} }
 const ipcMain = new EventEmitter();
+const handlers = {};
+ipcMain.handle = (name, fn) => { handlers[name] = fn; };
 let cursor = { x: 500, y: 30 };
 let unregistered = false;
-const electron = { app, BrowserWindow:Window, Tray, ipcMain, Menu:{buildFromTemplate:t=>t}, nativeImage:{createFromPath:()=>({isEmpty:()=>false})}, globalShortcut:{register:(key,cb)=>{assert.equal(key,'Control+Shift+Space');shortcut=cb;return true;},unregisterAll:()=>{unregistered=true;}}, screen:{getPrimaryDisplay:()=>({workArea:{x:0,y:0,width:1200,height:800}}),getAllDisplays:()=>[{workArea:{x:0,y:0,width:1200,height:800}}], getCursorScreenPoint:()=>cursor}, dialog:{showErrorBox:(_t,m)=>{throw Error(m)}}, utilityProcess:{fork:()=>{child=new EventEmitter();child.kill=()=>{child.killed=true};return child;}} };
+const safeStorage = { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'gnome_libsecret', encryptString: s => Buffer.from(s), decryptString: b => b.toString() };
+const electron = { app, BrowserWindow:Window, Tray, ipcMain, safeStorage, Menu:{buildFromTemplate:t=>t}, nativeImage:{createFromPath:()=>({isEmpty:()=>false})}, globalShortcut:{register:(key,cb)=>{assert.equal(key,'Control+Shift+Space');shortcut=cb;return true;},unregisterAll:()=>{unregistered=true;}}, screen:{getPrimaryDisplay:()=>({workArea:{x:0,y:0,width:1200,height:800}}),getAllDisplays:()=>[{workArea:{x:0,y:0,width:1200,height:800}}], getCursorScreenPoint:()=>cursor}, dialog:{showErrorBox:(_t,m)=>{throw Error(m)}}, utilityProcess:{fork:()=>{child=new EventEmitter();child.kill=()=>{child.killed=true};return child;}} };
 const original=Module._load;
 Module._load=function(request,...args){return request==='electron'?electron:original.call(this,request,...args)};
 global.fetch=async()=>({ok:true});
@@ -30,6 +33,15 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
 (async()=>{
  await wait(20);
  const [island, main]=windows;
+ main.webContents.mainFrame = { url: 'http://127.0.0.1:3737/' };
+ const trusted = { sender: main.webContents, senderFrame: main.webContents.mainFrame };
+ assert.throws(() => handlers['keys:status']({ sender: island.webContents }));
+ handlers['keys:save'](trusted, 'gemini', 'test-secret');
+ assert.equal(handlers['keys:status'](trusted).gemini, true);
+ let serverKey; child.postMessage = message => { serverKey = message; };
+ child.emit('message', { type: 'secure-key-request', id: '123', provider: 'gemini' });
+ assert.equal(serverKey.key, 'test-secret');
+ assert(!JSON.stringify(handlers['keys:status'](trusted)).includes('test-secret'));
  assert.equal(windows.length,2); assert.equal(main.visible,true); assert.equal(island.visible,false);
  assert.equal(island.options.frame,false); assert.equal(island.options.transparent,true); assert.equal(island.options.alwaysOnTop,true);
  assert.deepEqual([island.bounds.width,island.bounds.height],[132,40]); assert.equal(island.bounds.x,534);

@@ -1,6 +1,7 @@
-const { app, BrowserWindow, dialog, utilityProcess, Tray, Menu, nativeImage, globalShortcut, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, utilityProcess, Tray, Menu, nativeImage, globalShortcut, screen, ipcMain, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const { createVault } = require('./key-vault.cjs');
 const { setTimeout: delay } = require('node:timers/promises');
 
 const SERVER_PORT = 3737;
@@ -12,7 +13,7 @@ let quitting = false;
 let failureReported = false;
 let islandState = 'resting';
 let islandPosition;
-let resizeTimer, saveTimer, dragOrigin;
+let resizeTimer, saveTimer, dragOrigin, vault;
 
 app.setName('Hanex & Shumex');
 app.setAppUserModelId('com.itsmehanan.hanexshumex');
@@ -175,6 +176,18 @@ function setupTray() {
 
 async function startDesktop() {
   await app.whenReady();
+  vault = createVault(safeStorage, path.join(app.getPath('userData'), 'provider-keys.json'));
+  const trustedChat = event => mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame && event.senderFrame.url.startsWith(`${APP_URL}/`);
+  for (const [channel, action] of Object.entries({
+    'keys:status': () => vault.status(),
+    'keys:save': (provider, key) => vault.set(provider, key),
+    'keys:remove': provider => vault.remove(provider),
+    'keys:clear': () => vault.clear(),
+    'keys:migrate': keys => vault.migrate(keys),
+  })) ipcMain.handle(channel, (event, ...args) => {
+    if (!trustedChat(event)) throw new Error('Unauthorized key request.');
+    return action(...args);
+  });
   setupIslandIpc();
   setupIsland();
   setupTray();
@@ -185,9 +198,15 @@ async function startDesktop() {
   const child = utilityProcess.fork(path.join(projectRoot, 'dist-electron', 'server.cjs'), [], {
     cwd: app.isPackaged ? process.resourcesPath : projectRoot,
     serviceName: 'Hanex & Shumex server', stdio: 'pipe',
-    env: { ...process.env, NODE_ENV: app.isPackaged ? 'production' : 'development', MEXAI_APP_ROOT: projectRoot, MEXAI_HOST: SERVER_HOST, MEXAI_PORT: String(SERVER_PORT) },
+    env: { ...process.env, NODE_ENV: app.isPackaged ? 'production' : 'development', MEXAI_APP_ROOT: projectRoot, MEXAI_HOST: SERVER_HOST, MEXAI_PORT: String(SERVER_PORT), MEXAI_SECURE_KEYS: '1' },
   });
   serverProcess = child;
+  // The utility process asks the main process directly; decrypted keys never travel to the renderer.
+  child.on('message', message => {
+    if (message?.type !== 'secure-key-request' || typeof message.id !== 'string') return;
+    try { child.postMessage({ type: 'secure-key-response', id: message.id, key: vault.getForServer(message.provider) }); }
+    catch { child.postMessage({ type: 'secure-key-response', id: message.id, error: 'Secure key storage is unavailable.' }); }
+  });
   child.stdout?.pipe(process.stdout, { end: false });
   child.stderr?.pipe(process.stderr, { end: false });
   child.once('exit', code => {
@@ -202,7 +221,7 @@ async function startDesktop() {
   mainWindow = new BrowserWindow({
     title: 'Hanex & Shumex', width: 1280, height: 860, minWidth: 960, minHeight: 640,
     backgroundColor: '#0b0f17', show: false, autoHideMenuBar: true,
-    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+    webPreferences: { preload: path.join(__dirname, 'chat-preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
   mainWindow.once('ready-to-show', () => mainWindow?.show());
   mainWindow.on('close', event => { if (!quitting) { event.preventDefault(); hideMain(); } });
