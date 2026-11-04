@@ -97,101 +97,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         </div>
       )}
 
-      {/* Main Desktop Input Container */}
-      <div
-        className={`relative rounded-2xl backdrop-blur-xl border transition-all duration-300 shadow-2xl ${
-          isHanex
-            ? 'bg-[#0f172a]/90 border-cyan-500/30 focus-within:border-cyan-400 focus-within:shadow-[0_0_25px_-5px_rgba(6,182,212,0.35)]'
-            : 'bg-[#18111e]/90 border-pink-500/30 focus-within:border-pink-400 focus-within:shadow-[0_0_25px_-5px_rgba(244,63,94,0.35)]'
-        }`}
-      >
-        <div className="p-3">
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={`Message ${agent.name} (${isHanex ? 'calm & practical' : 'warm & creative'})...`}
-            rows={1}
-            className="w-full bg-transparent text-slate-100 placeholder:text-slate-500 focus:outline-none resize-none text-[14px] leading-relaxed max-h-[180px] min-h-[44px] py-1 px-1"
-          />
-
-          {/* Action Toolbar */}
-          <div className="flex items-center justify-between pt-2 border-t border-white/5 mt-1">
-            <div className="flex items-center gap-1.5">
-              {/* Starters suggestions toggle */}
-              <button
-                type="button"
-                onClick={() => setShowPromptsMenu((prev) => !prev)}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition cursor-pointer border ${
-                  showPromptsMenu
-                    ? isHanex
-                      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
-                      : 'bg-pink-500/20 text-pink-300 border-pink-500/40'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5 border-transparent'
-                }`}
-                title="Ideas & Starters"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Starters</span>
-              </button>
-
-              {/* Clear draft */}
-              {text.trim().length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setText('')}
-                  className="p-1.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-white/5 transition cursor-pointer"
-                  title="Clear text"
-                >
-                  <Eraser className="w-3.5 h-3.5" />
-                </button>
-              )}
-
-              <span className="text-[11px] text-slate-500 hidden md:inline ml-2 select-none">
-                Shift + Enter for new line
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {text.length > 0 && (
-                <span className="text-[10px] text-slate-500 select-none">
-                  {text.length} chars
-                </span>
-              )}
-
-              {/* Stop Button when streaming */}
-              {isGenerating ? (
-                <button
-                  type="button"
-                  onClick={onStop}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600/80 hover:bg-rose-500 text-white font-medium text-xs transition cursor-pointer shadow-md shadow-rose-950/40"
-                  title="Stop generating"
-                >
-                  <Square className="w-3.5 h-3.5 fill-current" />
-                  <span>Stop</span>
-                </button>
-              ) : (
-                /* Send Button */
-                <button
-                  type="button"
-                  onClick={handleSubmit}
-                  disabled={!text.trim()}
-                  className={`flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-white transition-all duration-200 cursor-pointer shadow-lg disabled:opacity-40 disabled:cursor-not-allowed ${
-                    isHanex
-                      ? 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 shadow-cyan-950/40 active:scale-95'
-                      : 'bg-gradient-to-r from-rose-500 to-pink-600 hover:from-rose-400 hover:to-pink-500 shadow-pink-950/40 active:scale-95'
-                  }`}
-                  title="Send message (Enter)"
-                >
-                  <span>Send</span>
-                  <Send className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
+      <div className="composer">
+        <button type="button" onClick={() => setShowPromptsMenu(prev => !prev)} className="composer-ideas" title="Ideas & Starters" aria-label="Ideas and starters"><Sparkles size={18} /></button>
+        <textarea ref={textareaRef} value={text} onChange={e => setText(e.target.value)} onKeyDown={handleKeyDown} placeholder={`Message ${agent.name}...`} rows={1} aria-label={`Message ${agent.name}`} />
+        {text.trim() && <button type="button" onClick={() => setText('')} className="composer-clear" title="Clear text" aria-label="Clear text"><Eraser size={16} /></button>}
+        {isGenerating ? <button type="button" onClick={onStop} className="composer-send" title="Stop generating"><Square size={15} fill="currentColor" /><span>Stop</span></button> : <button type="button" onClick={handleSubmit} disabled={!text.trim()} className="composer-send" title="Send message (Enter)"><span>Send</span><Send size={16} /></button>}
       </div>
+      <div className="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</div>
     </div>
   );
 };

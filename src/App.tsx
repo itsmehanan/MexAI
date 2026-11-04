@@ -40,6 +40,7 @@ import { TypingIndicator } from './components/TypingIndicator';
 import { SettingsModal } from './components/SettingsModal';
 import { QuickSwitcherModal } from './components/QuickSwitcherModal';
 import { Avatar } from './components/Avatar';
+import { migrateSavedKeys } from './utils/key-migration';
 
 const STORAGE_KEY_SETTINGS = 'hanex_shumex_settings_v2';
 const STORAGE_KEY_MESSAGES = 'hanex_shumex_messages_v2';
@@ -49,7 +50,8 @@ const DEFAULT_PROVIDERS: Record<ProviderId, ProviderSettings> = {
   gemini: { id: 'gemini', enabled: true, apiKey: '' },
   openai: { id: 'openai', enabled: false, apiKey: '' },
   anthropic: { id: 'anthropic', enabled: false, apiKey: '' },
-  openrouter: { id: 'openrouter', enabled: false, apiKey: '' },
+  openrouter: { id: 'openrouter', enabled: false, apiKey: '', openRouterModelId: 'openrouter/free' },
+  custom: { id: 'custom', enabled: false, apiKey: '', baseUrl: '', customName: 'Custom', customModel: '' },
   ollama: { id: 'ollama', enabled: false, apiKey: '', baseUrl: 'http://localhost:11434' },
 };
 
@@ -58,7 +60,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   model: 'gemini-3.8-flash',
   providers: DEFAULT_PROVIDERS,
   openRouterFreeOnly: true,
+  fallbacks: [],
   soundEffects: true,
+  confettiEffects: true,
   speechSynthesis: false,
   voiceSpeed: 1.0,
   syncThemeWithAgent: true,
@@ -117,9 +121,10 @@ export default function App() {
         return {
           ...DEFAULT_SETTINGS,
           ...parsed,
+          apiKey: '',
           providers: {
             ...DEFAULT_PROVIDERS,
-            ...(parsed.providers || {}),
+            ...Object.fromEntries(Object.entries(parsed.providers || {}).map(([id, value]: [string, any]) => [id, { ...value, apiKey: '' }])) ,
           },
         };
       }
@@ -130,6 +135,16 @@ export default function App() {
   });
 
   // Backend status & available environment keys
+  const [updateState, setUpdateState] = useState<DesktopUpdateState>({ version: '', status: 'unavailable' });
+  useEffect(() => {
+    if (!window.desktopUpdates) return;
+    const unsubscribe = window.desktopUpdates.onState(setUpdateState);
+    window.desktopUpdates.status().then(setUpdateState).catch(() => {});
+    return unsubscribe;
+  }, []);
+  const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
+  const [keyStorageError, setKeyStorageError] = useState('');
+  const [settingsReady, setSettingsReady] = useState(false);
   const [hasEnvKey, setHasEnvKey] = useState(false);
   const [envKeys, setEnvKeys] = useState<Record<string, boolean>>({});
 
@@ -212,14 +227,38 @@ export default function App() {
     }
   }, [messages]);
 
-  // Save settings to localStorage
+  // Move old renderer keys to the vault before replacing the legacy settings record.
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
-    } catch (e) {
-      console.warn('Failed to save settings', e);
-    }
-  }, [settings]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await migrateSavedKeys(localStorage, STORAGE_KEY_SETTINGS, window.secureKeys);
+        if (cancelled) return;
+        setSavedKeys(status);
+        setSettingsReady(true);
+      } catch {
+        if (!cancelled) setKeyStorageError('Secure key storage or migration is unavailable. Existing saved data was left untouched; reopen the app after resolving the issue.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsReady) return;
+    try { localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings)); }
+    catch (e) { console.warn('Failed to save settings', e); }
+  }, [settings, settingsReady]);
+
+  const saveSecureKey = async (provider: ProviderId, key: string) => {
+    if (!window.secureKeys || !settingsReady) throw new Error('Secure key storage is unavailable.');
+    await window.secureKeys.save(provider, key);
+    setSavedKeys(prev => ({ ...prev, [provider]: true }));
+  };
+  const removeSecureKey = async (provider: ProviderId) => {
+    if (!window.secureKeys || !settingsReady) throw new Error('Secure key storage is unavailable.');
+    await window.secureKeys.remove(provider);
+    setSavedKeys(prev => ({ ...prev, [provider]: false }));
+  };
 
   // Scroll to bottom helper
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
@@ -311,9 +350,9 @@ export default function App() {
         content: m.content,
       })),
       providerConfig: {
-        apiKey: providerConfig.apiKey,
         baseUrl: providerConfig.baseUrl,
       },
+      fallbacks: (settings.fallbacks || []).filter(f => settings.providers[f.provider]?.enabled && f.model?.trim()).map(f => ({ provider: f.provider, model: f.model, baseUrl: settings.providers[f.provider]?.baseUrl })),
     };
 
     try {
@@ -351,7 +390,9 @@ export default function App() {
             if (!jsonStr) continue;
             try {
               const data = JSON.parse(jsonStr);
-              if (data.error) {
+              if (data.answeringModel) {
+                setMessages(prev => ({ ...prev, [activeAgentId]: prev[activeAgentId].map(m => m.id === assistantPlaceholderId ? { ...m, provider: data.answeringModel.provider, model: data.answeringModel.model } : m) }));
+              } else if (data.error) {
                 streamError = data.error;
               } else if (data.text) {
                 accumulatedText += data.text;
@@ -394,39 +435,6 @@ export default function App() {
 
       if (streamError) {
         throw new Error(streamError);
-      }
-
-      // Retry once via non-streaming /api/chat if stream returned empty text and no error
-      if (!accumulatedText.trim()) {
-        console.warn(
-          'Stream finished with empty text and no error. Retrying once via non-streaming /api/chat...'
-        );
-        try {
-          const fallbackRes = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestPayload),
-            signal: abortControllerRef.current.signal,
-          });
-
-          if (fallbackRes.ok) {
-            const fallbackData = await fallbackRes.json();
-            if (fallbackData.text && fallbackData.text.trim()) {
-              accumulatedText = fallbackData.text.trim();
-            }
-          } else {
-            const fallbackErrorData = await fallbackRes.json().catch((jsonErr) => {
-              console.warn('Failed to parse fallback error JSON:', jsonErr);
-              return {};
-            });
-            if (fallbackErrorData.error) {
-              streamError = fallbackErrorData.error;
-            }
-          }
-        } catch (fallbackErr: any) {
-          if (fallbackErr.name === 'AbortError') throw fallbackErr;
-          console.warn('Fallback /api/chat attempt failed:', fallbackErr);
-        }
       }
 
       // If still empty or error occurred:
@@ -554,7 +562,7 @@ export default function App() {
     URL.revokeObjectURL(url);
 
     try {
-      confetti({ particleCount: 30, spread: 60, origin: { y: 0.8 } });
+      if (settings.confettiEffects) confetti({ particleCount: 30, spread: 60, origin: { y: 0.8 } });
     } catch {}
   };
 
@@ -588,12 +596,22 @@ export default function App() {
     URL.revokeObjectURL(url);
 
     try {
-      confetti({ particleCount: 50, spread: 80, origin: { y: 0.7 } });
+      if (settings.confettiEffects) confetti({ particleCount: 50, spread: 80, origin: { y: 0.7 } });
     } catch {}
   };
 
   // Reset all data
-  const handleResetAllData = () => {
+  const handleResetAllData = async () => {
+    try {
+      if (!settingsReady) throw new Error('Secure migration must complete before resetting data.');
+      if (window.secureKeys) {
+        await window.secureKeys.clear();
+        setSavedKeys({});
+      }
+    } catch {
+      setKeyStorageError('Could not remove secure keys. Reset was cancelled.');
+      return;
+    }
     setMessages(INITIAL_MESSAGES);
     setSettings(DEFAULT_SETTINGS);
     setAgentModels(DEFAULT_AGENT_MODELS);
@@ -606,31 +624,15 @@ export default function App() {
   const currentProviderConfig = settings.providers[activeModelSelection.provider];
   const isCurrentProviderKeyMissing =
     activeModelSelection.provider !== 'ollama' &&
-    !currentProviderConfig?.apiKey?.trim() &&
+    !savedKeys[activeModelSelection.provider] &&
     !envKeys[activeModelSelection.provider];
 
   return (
-    <div
-      className={`h-screen w-screen flex flex-col bg-[#070b13] text-slate-100 overflow-hidden font-sans transition-colors duration-500 relative ${
-        isHanex ? 'selection:bg-cyan-500/30 selection:text-cyan-200' : 'selection:bg-rose-500/30 selection:text-rose-200'
-      }`}
-    >
-      {/* Background Ambient Glow Spots */}
-      <div
-        className={`pointer-events-none fixed -top-40 -right-40 w-96 h-96 rounded-full blur-[140px] opacity-25 transition-colors duration-700 ${
-          isHanex ? 'bg-cyan-500' : 'bg-rose-500'
-        }`}
-      />
-      <div
-        className={`pointer-events-none fixed -bottom-40 -left-40 w-96 h-96 rounded-full blur-[160px] opacity-20 transition-colors duration-700 ${
-          isHanex ? 'bg-blue-600' : 'bg-fuchsia-600'
-        }`}
-      />
-
+    <div className={`app-shell theme-${activeAgentId}`}>
       {/* Desktop Window Title Header with Multi-Provider Model Dropdown */}
       <DesktopHeader
         activeAgent={activeAgent}
-        onSwitchAgent={handleSelectAgent}
+        onOpenQuickSwitcher={() => setIsQuickSwitcherOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         selectedModel={activeModelSelection}
         onSelectModel={handleSelectModelForActiveAgent}
@@ -644,77 +646,24 @@ export default function App() {
         onRefreshOllama={() => fetchOllamaModels()}
       />
 
+      {updateState.status === 'ready' && <div role="status" className="flex items-center justify-center gap-3 px-4 py-2 bg-[#1d3046] text-sm text-white">
+        <span>Update ready. Restart to install</span>
+        <button type="button" onClick={() => window.desktopUpdates?.restart()} className="rounded-full bg-[#B5DEFF] text-[#0A1020] px-4 py-1 text-xs font-bold">Restart</button>
+        {updateState.restartError && <span className="text-xs text-amber-200">{updateState.restartError}</span>}
+      </div>}
       {/* Main Desktop Container: Sidebar + Chat Area */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
-        <Sidebar
-          activeAgentId={activeAgentId}
-          onSelectAgent={handleSelectAgent}
-          messages={messages}
-          onClearChat={handleClearChat}
-          onExportChat={handleExportChat}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenQuickSwitcher={() => setIsQuickSwitcherOpen(true)}
-          soundEnabled={settings.soundEffects}
-          onToggleSound={() => handleSaveSettings({ soundEffects: !settings.soundEffects })}
-          hasCustomKey={Boolean(currentProviderConfig?.apiKey?.trim())}
-          hasEnvKey={hasEnvKey}
-          activeModelSelection={activeModelSelection}
-          agentModels={agentModels}
-          providers={settings.providers}
-        />
+        <Sidebar activeAgentId={activeAgentId} onSelectAgent={handleSelectAgent} providers={settings.providers} isGenerating={isGenerating} />
 
         {/* Chat Main Area */}
-        <main className="flex-1 flex flex-col h-full bg-[#0a0f1c]/70 relative overflow-hidden backdrop-blur-sm">
-          {/* Subtle Top Chat Subheader for Active Agent */}
-          <div className="px-6 py-2.5 border-b border-white/5 flex items-center justify-between bg-black/10 select-none z-10">
-            <div className="flex items-center gap-3">
-              <span
-                className={`w-2 h-2 rounded-full animate-pulse ${
-                  isHanex ? 'bg-cyan-400' : 'bg-pink-400'
-                }`}
-              />
-              <span className="text-xs font-semibold text-slate-300">
-                {activeAgent.name}'s Workspace
-              </span>
-              <span className="text-slate-600 text-xs">•</span>
-              <span className="text-[11px] text-slate-400 hidden sm:inline">
-                Powered by{' '}
-                <strong className="text-slate-200 font-mono">
-                  {activeModelSelection.model}
-                </strong>{' '}
-                ({PROVIDERS_META[activeModelSelection.provider]?.name || activeModelSelection.provider})
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  const randomPrompt =
-                    activeAgent.suggestedPrompts[
-                      Math.floor(Math.random() * activeAgent.suggestedPrompts.length)
-                    ];
-                  handleSendMessage(randomPrompt.prompt);
-                }}
-                disabled={isGenerating}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition cursor-pointer disabled:opacity-40 ${
-                  isHanex
-                    ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/20'
-                    : 'bg-pink-500/10 text-pink-300 border-pink-500/30 hover:bg-pink-500/20'
-                }`}
-                title="Send a random prompt starter"
-              >
-                <Sparkles className="w-3 h-3" />
-                <span className="hidden md:inline">Surprise Prompt</span>
-              </button>
-
-              <button
-                onClick={() => handleClearChat(activeAgentId)}
-                className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-white/5 transition cursor-pointer"
-                title="Clear this conversation"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
+        <main className="chat-main">
+          <div className="chat-heading">
+            <div className="chat-heading-title"><Avatar agentId={activeAgentId} size="md" status={isGenerating ? 'typing' : 'online'} /><div><span className="eyebrow">YOUR CONVERSATION</span><h1>Chat with {activeAgent.name} <span className="heading-dot">✳</span></h1><p>{isHanex ? 'A little clarity, whenever you need it.' : 'A little inspiration, whenever you need it.'}</p></div></div>
+            <div className="heading-actions">
+              <button onClick={() => { const prompt = activeAgent.suggestedPrompts[Math.floor(Math.random() * activeAgent.suggestedPrompts.length)]; handleSendMessage(prompt.prompt); }} disabled={isGenerating} title="Send a random prompt starter" aria-label="Send a random prompt starter"><Sparkles size={17} /></button>
+              <button onClick={() => handleExportChat(activeAgentId)} title="Export chat history" aria-label="Export chat history"><Download size={17} /></button>
+              <button onClick={() => handleClearChat(activeAgentId)} title="Clear this conversation" aria-label="Clear this conversation"><Trash2 size={17} /></button>
             </div>
           </div>
 
@@ -738,42 +687,17 @@ export default function App() {
 
           {/* Message List */}
           <div className="flex-1 overflow-y-auto py-4 space-y-1 relative">
-            {/* Ambient agent greeting header banner if few messages */}
             {activeMessages.length <= 2 && (
-              <div className="max-w-xl mx-auto my-6 px-4 text-center">
-                <div className="inline-flex p-3 rounded-3xl bg-white/[0.02] border border-white/5 mb-3 shadow-xl">
-                  <Avatar agentId={activeAgent.id} size="xl" showStatus={true} status="online" />
-                </div>
-                <h2 className="text-lg font-bold text-white tracking-tight mb-1">
-                  Meet {activeAgent.name}
-                </h2>
-                <p className="text-xs text-slate-400 leading-relaxed max-w-md mx-auto mb-2">
-                  {activeAgent.description}
-                </p>
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] font-mono text-slate-300 mb-4">
-                  <Cpu className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Model: {activeModelSelection.model}</span>
-                </div>
-
-                {/* Prompt Starters Chips */}
-                <div className="flex flex-wrap justify-center gap-2 mt-2">
+              <div className="welcome-panel">
+                <div className="welcome-avatar"><Avatar agentId={activeAgent.id} size="2xl" status={isGenerating ? 'typing' : 'online'} /></div>
+                <span className="eyebrow">A LITTLE SPACE FOR BIG IDEAS</span>
+                <h2>Good to see you <span>here.</span></h2>
+                <p>Meet {activeAgent.name}, your {isHanex ? 'thoughtful partner for making sense of things' : 'creative partner for wherever ideas take you'}.</p>
+                <div className="starter-label">NOT SURE WHERE TO START?</div>
+                <div className="starter-grid">
                   {activeAgent.suggestedPrompts.map((p, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => handleSendMessage(p.prompt)}
-                      disabled={isGenerating}
-                      className={`text-left text-xs px-3 py-2 rounded-xl border transition cursor-pointer flex items-center gap-2 group ${
-                        isHanex
-                          ? 'bg-slate-900/60 border-cyan-500/20 hover:border-cyan-400 text-slate-300 hover:text-white'
-                          : 'bg-slate-900/60 border-pink-500/20 hover:border-pink-400 text-slate-300 hover:text-white'
-                      }`}
-                    >
-                      <Sparkles
-                        className={`w-3.5 h-3.5 ${
-                          isHanex ? 'text-cyan-400' : 'text-pink-400'
-                        } group-hover:scale-110 transition-transform`}
-                      />
-                      <span>{p.title}</span>
+                    <button key={idx} onClick={() => handleSendMessage(p.prompt)} disabled={isGenerating}>
+                      <Sparkles size={15} /><span>{p.title}</span><span className="starter-arrow">↗</span>
                     </button>
                   ))}
                 </div>
@@ -819,6 +743,13 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onSaveSettings={handleSaveSettings}
+        updateState={updateState}
+        onCheckUpdates={() => window.desktopUpdates?.check().then(setUpdateState).catch(() => {})}
+        savedKeys={savedKeys}
+        secureStorageAvailable={Boolean(window.secureKeys) && settingsReady}
+        keyStorageError={keyStorageError}
+        onSaveKey={saveSecureKey}
+        onRemoveKey={removeSecureKey}
         onClearAgentChat={handleClearChat}
         onResetAllData={handleResetAllData}
         onExportAll={handleExportAll}

@@ -1,0 +1,21 @@
+* { box-sizing: border-box; }
+html, body { margin:0; width:100%; height:100%; overflow:hidden; background:transparent; font-family: 'Segoe UI', sans-serif; color:white; }
+.island { width:100%; height:100%; display:flex; align-items:center; gap:16px; padding:0 17px; border-radius:28px; background:#05070F; border:1px solid rgba(255,255,255,.22); cursor:pointer; user-select:none; overflow:hidden; }
+.island:focus-visible { outline:2px solid #B5DEFF; outline-offset:-3px; }
+.faces { display:flex; align-items:center; gap:7px; flex-shrink:0; }
+.resting .faces { margin:auto; }
+.face { width:20px; height:20px; border-radius:50%; display:flex; justify-content:center; align-items:center; gap:3px; }
+.face i { width:2px; height:3px; border-radius:50%; background:#0A1020; }
+.face.blue { background:radial-gradient(circle at 35% 30%,#B5DEFF,#4AA8F5); box-shadow:0 0 12px rgba(90,180,255,.45); }
+.face.pink { background:radial-gradient(circle at 35% 30%,#FFC2DE,#F0609F); box-shadow:0 0 12px rgba(255,126,182,.45); }.face.pink i { background:#2A0F20; }
+.state-content { display:none; min-width:0; flex:1; animation:appear .22s ease both; }
+.listening .listening-content { display:flex; align-items:center; justify-content:space-between; font-size:12px; font-weight:600; }
+.wave { display:flex; align-items:center; gap:3px; height:22px; }.wave i { width:3px; height:6px; border-radius:2px; background:#B5DEFF; animation:wave 1s ease-in-out infinite alternate; }.wave i:nth-child(2),.wave i:nth-child(4) { animation-delay:.2s; }.wave i:nth-child(3) { animation-delay:.4s; }
+.working .working-content { display:block; }.working-label { display:flex; justify-content:space-between; gap:10px; font-size:11px; white-space:nowrap; }.working-label span:first-child { font-weight:700; }.working-label span:last-child { overflow:hidden; text-overflow:ellipsis; color:#aab6d2; }.progress { height:3px; border-radius:4px; background:#252e43; overflow:hidden; margin-top:8px; }.progress span { display:block; width:40%; height:100%; background:#83c7ff; border-radius:4px; animation:progress 2s ease-in-out infinite alternate; }
+.approval .approval-content { display:flex; align-items:center; gap:8px; }.approval-content div { flex:1; min-width:0; }.approval-content strong,.approval-content div span { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }.approval-content strong { font-size:12px; }.approval-content div span { color:#aab6d2; font-size:11px; margin-top:3px; }.approval-content button { border:0; border-radius:999px; padding:8px 12px; font:600 11px 'Segoe UI', sans-serif; cursor:pointer; color:#0A1020; background:#B5DEFF; }.approval-content button:last-child { color:white; background:#30384a; }.approval-content button:focus-visible { outline:2px solid white; }
+@keyframes wave { to { height:19px; } } @keyframes progress { to { transform:translateX(150%); } } @keyframes appear { from { opacity:0; } to { opacity:1; } }
+@media(prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
+
+.update .update-content { display:flex; align-items:center; gap:10px; justify-content:space-between; font-size:11px; font-weight:600; white-space:nowrap; }
+.update-content button { border:0; border-radius:999px; padding:8px 12px; font:600 11px 'Segoe UI', sans-serif; cursor:pointer; color:#0A1020; background:#B5DEFF; }
+.update-content button:focus-visible { outline:2px solid white; }

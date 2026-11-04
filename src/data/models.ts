@@ -58,6 +58,7 @@ export const PROVIDERS_META: Record<ProviderId, ProviderMeta> = {
     borderColor: 'border-purple-500/30',
     badgeBg: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
   },
+  custom: { id: 'custom', name: 'Custom (OpenAI-compatible)', tagline: 'Your own endpoint', description: 'Use an OpenAI-compatible chat completions API.', keyPlaceholder: 'API key', keyHelp: 'Keys are stored securely in the desktop app.', accentColor: '#a78bfa', borderColor: 'border-purple-500/30', badgeBg: 'bg-purple-500/15 text-purple-300 border-purple-500/30' },
   ollama: {
     id: 'ollama',
     name: 'Ollama (Local)',
@@ -73,6 +74,7 @@ export const PROVIDERS_META: Record<ProviderId, ProviderMeta> = {
 };
 
 export const DEFAULT_PROVIDER_MODELS: Record<ProviderId, ModelOption[]> = {
+  custom: [],
   gemini: [
     {
       id: 'gemini-3.8-flash',
@@ -154,6 +156,7 @@ export const DEFAULT_PROVIDER_MODELS: Record<ProviderId, ModelOption[]> = {
     },
   ],
   openrouter: [
+    { id: 'openrouter/free', name: 'openrouter/free', provider: 'openrouter', isFree: true, badge: 'Default', description: 'OpenRouter free model router.' },
     {
       id: 'meta-llama/llama-3.3-70b-instruct:free',
       name: 'Llama 3.3 70B (Free)',
@@ -240,3 +243,19 @@ export const DEFAULT_PROVIDER_MODELS: Record<ProviderId, ModelOption[]> = {
     },
   ],
 };
+
+// Explicitly entered IDs remain visible even when the curated list is filtered to free models.
+export function getOpenRouterModels(modelId: string | undefined, freeOnly: boolean, selectedId?: string): ModelOption[] {
+  const curated = DEFAULT_PROVIDER_MODELS.openrouter;
+  const configured = modelId?.trim() || 'openrouter/free';
+  const visible = freeOnly ? curated.filter(model => model.isFree) : curated;
+  const ids = [configured, ...(selectedId ? [selectedId] : [])];
+  const result = [...visible];
+  for (const id of ids.reverse()) {
+    const existing = curated.find(model => model.id === id);
+    const index = result.findIndex(model => model.id === id);
+    if (index !== -1) result.splice(index, 1);
+    result.unshift(existing || { id, name: id, provider: 'openrouter', description: 'Manually entered model ID; check pricing on OpenRouter.' });
+  }
+  return result.filter((model, index) => result.findIndex(other => other.id === model.id) === index);
+}
