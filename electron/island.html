@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hanex &amp; Shumex island</title>
+<link rel="stylesheet" href="island.css">
+</head>
+<body>
+<div id="island" class="island resting" role="button" tabindex="0" aria-label="Open Hanex and Shumex">
+  <div class="faces" aria-hidden="true"><span class="face blue"><i></i><i></i></span><span class="face pink"><i></i><i></i></span></div>
+  <div class="state-content listening-content"><span>Listening</span><span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span></div>
+  <div class="state-content working-content"><div class="working-label"><span>Working</span><span>Preparing your response…</span></div><div class="progress"><span></span></div></div>
+  <div class="state-content approval-content"><div><strong>Needs approval</strong><span>Allow this demo action?</span></div><button id="approve" type="button">Approve</button><button id="deny" type="button">Deny</button></div>
+</div>
+<script src="island.js"></script>
+</body>
+</html>

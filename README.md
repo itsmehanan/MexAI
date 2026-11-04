@@ -11,7 +11,7 @@ npm install
 npm run electron:dev
 ```
 
-This starts the existing Express/Vite server and opens the unchanged chat in a desktop window. Configure provider API keys in the existing Settings panel; a root `.env` file is also supported during development. Closing the window stops the desktop server.
+This starts the existing Express/Vite server and opens the unchanged chat in a desktop window. Configure provider API keys in the existing Settings panel; a root `.env` file is also supported during development. Closing or minimizing the window keeps the app running in the system tray and shows the floating island. Click the island or press Ctrl+Shift+Space to reopen the chat. Drag the island to reposition it; its position is remembered. Use the tray menu to quit. The tray menu also offers demo island states; approval buttons are illustrative only and do not authorize real tasks.
 
 The web version still works independently:
 

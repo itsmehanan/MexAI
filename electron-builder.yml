@@ -3,7 +3,7 @@ productName: Hanex & Shumex
 directories:
   output: release
 files:
-  - electron/main.cjs
+  - electron/**/*
   - dist/**/*
   - dist-electron/**/*
   - package.json
