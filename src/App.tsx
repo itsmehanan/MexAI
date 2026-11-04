@@ -51,6 +51,7 @@ const DEFAULT_PROVIDERS: Record<ProviderId, ProviderSettings> = {
   openai: { id: 'openai', enabled: false, apiKey: '' },
   anthropic: { id: 'anthropic', enabled: false, apiKey: '' },
   openrouter: { id: 'openrouter', enabled: false, apiKey: '' },
+  custom: { id: 'custom', enabled: false, apiKey: '', baseUrl: '', customName: 'Custom', customModel: '' },
   ollama: { id: 'ollama', enabled: false, apiKey: '', baseUrl: 'http://localhost:11434' },
 };
 
@@ -59,6 +60,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   model: 'gemini-3.8-flash',
   providers: DEFAULT_PROVIDERS,
   openRouterFreeOnly: true,
+  fallbacks: [],
   soundEffects: true,
   confettiEffects: true,
   speechSynthesis: false,
@@ -343,6 +345,7 @@ export default function App() {
       providerConfig: {
         baseUrl: providerConfig.baseUrl,
       },
+      fallbacks: (settings.fallbacks || []).filter(f => settings.providers[f.provider]?.enabled && f.model?.trim()).map(f => ({ provider: f.provider, model: f.model, baseUrl: settings.providers[f.provider]?.baseUrl })),
     };
 
     try {
@@ -380,7 +383,9 @@ export default function App() {
             if (!jsonStr) continue;
             try {
               const data = JSON.parse(jsonStr);
-              if (data.error) {
+              if (data.answeringModel) {
+                setMessages(prev => ({ ...prev, [activeAgentId]: prev[activeAgentId].map(m => m.id === assistantPlaceholderId ? { ...m, provider: data.answeringModel.provider, model: data.answeringModel.model } : m) }));
+              } else if (data.error) {
                 streamError = data.error;
               } else if (data.text) {
                 accumulatedText += data.text;
@@ -423,39 +428,6 @@ export default function App() {
 
       if (streamError) {
         throw new Error(streamError);
-      }
-
-      // Retry once via non-streaming /api/chat if stream returned empty text and no error
-      if (!accumulatedText.trim()) {
-        console.warn(
-          'Stream finished with empty text and no error. Retrying once via non-streaming /api/chat...'
-        );
-        try {
-          const fallbackRes = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestPayload),
-            signal: abortControllerRef.current.signal,
-          });
-
-          if (fallbackRes.ok) {
-            const fallbackData = await fallbackRes.json();
-            if (fallbackData.text && fallbackData.text.trim()) {
-              accumulatedText = fallbackData.text.trim();
-            }
-          } else {
-            const fallbackErrorData = await fallbackRes.json().catch((jsonErr) => {
-              console.warn('Failed to parse fallback error JSON:', jsonErr);
-              return {};
-            });
-            if (fallbackErrorData.error) {
-              streamError = fallbackErrorData.error;
-            }
-          }
-        } catch (fallbackErr: any) {
-          if (fallbackErr.name === 'AbortError') throw fallbackErr;
-          console.warn('Fallback /api/chat attempt failed:', fallbackErr);
-        }
       }
 
       // If still empty or error occurred:

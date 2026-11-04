@@ -4,5 +4,6 @@ contextBridge.exposeInMainWorld('secureKeys', {
   save: (provider, key) => ipcRenderer.invoke('keys:save', provider, key),
   remove: provider => ipcRenderer.invoke('keys:remove', provider),
   clear: () => ipcRenderer.invoke('keys:clear'),
+  setCustomEndpoint: url => ipcRenderer.invoke('keys:custom-endpoint', url),
   migrate: keys => ipcRenderer.invoke('keys:migrate', keys),
 });

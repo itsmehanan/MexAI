@@ -71,17 +71,20 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
         return <Cpu className="w-3.5 h-3.5 text-amber-400" />;
       case 'openrouter':
         return <Globe className="w-3.5 h-3.5 text-purple-400" />;
+      case 'custom':
+        return <Globe className="w-3.5 h-3.5 text-purple-400" />;
       case 'ollama':
         return <HardDrive className="w-3.5 h-3.5 text-orange-400" />;
     }
   };
 
   // Build model list for enabled providers
-  const enabledProvidersList = (['gemini', 'openai', 'anthropic', 'openrouter', 'ollama'] as ProviderId[]).filter(
+  const enabledProvidersList = (['gemini', 'openai', 'anthropic', 'openrouter', 'ollama', 'custom'] as ProviderId[]).filter(
     (p) => providers[p]?.enabled
   );
 
   const getModelsForProvider = (p: ProviderId): ModelOption[] => {
+    if (p === 'custom') { const model = providers.custom?.customModel?.trim(); return model ? [{ id: model, name: model, provider: 'custom' }] : []; }
     if (p === 'ollama') {
       return ollamaModels.length > 0 ? ollamaModels : DEFAULT_PROVIDER_MODELS.ollama;
     }
@@ -213,7 +216,7 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
                   </div>
                 ) : (
                   enabledProvidersList.map((p) => {
-                    const meta = PROVIDERS_META[p];
+                    const meta = p === 'custom' && providers.custom?.customName ? { ...PROVIDERS_META[p], name: providers.custom.customName } : PROVIDERS_META[p];
                     const models = getModelsForProvider(p);
 
                     return (

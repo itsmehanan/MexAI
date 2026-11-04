@@ -11,13 +11,24 @@ test('server requests vault keys directly and redacts split streamed responses',
   process.env.MEXAI_PORT = '38769';
   process.env.NODE_ENV = 'production';
   const port = new EventEmitter() as EventEmitter & { postMessage: (data: any) => void };
-  port.postMessage = data => { queueMicrotask(() => port.emit('message', { data: { type: 'secure-key-response', id: data.id, key: secret } })); };
+  port.postMessage = data => { queueMicrotask(() => port.emit('message', { data: { type: 'secure-key-response', id: data.id, key: data.type === 'secure-endpoint-request' ? 'https://trusted.example/v1' : secret } })); };
   (process as any).parentPort = port;
   const originalFetch = global.fetch;
   let authorization = '';
+  const requests: { url: string; model: string }[] = [];
+  let scenario = 'normal';
   global.fetch = async (_url, init) => {
     authorization = (init?.headers as Record<string, string>).Authorization;
     const request = JSON.parse(String(init?.body));
+    requests.push({ url: String(_url), model: request.model });
+    if (scenario === 'fallback' && request.model === 'primary') return new Response(JSON.stringify({ error: { message: 'busy' } }), { status: 503 });
+    if (scenario === 'empty' && request.model === 'primary') return new Response('data: [DONE]\n\n', { status: 200 });
+    if (scenario === 'rate' && request.model === 'primary') return new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 429 });
+    if (scenario === 'bad' && request.model === 'primary') return new Response(JSON.stringify({ error: { message: 'bad credentials' } }), { status: 401 });
+    if (scenario === 'partial') {
+      let step = 0;
+      return new Response(new ReadableStream({ pull(controller) { if (step++ === 0) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: 'A partial answer from provider' } }] })}\n\n`)); else controller.error(Object.assign(new Error('busy'), { status: 503 })); } }), { status: 200 });
+    }
     if (request.stream) {
       return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: 'key provider-super-' } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: { content: 'secret end' } }] })}\n\ndata: [DONE]\n\n`, { status: 200 });
     }
@@ -41,6 +52,22 @@ test('server requests vault keys directly and redacts split streamed responses',
     assert(!joined.includes(secret));
     assert(joined.includes('[redacted]'));
     assert.equal(authorization, `Bearer ${secret}`);
+    for (scenario of ['fallback', 'empty', 'rate']) {
+      requests.length = 0;
+      const output = await post('/api/chat/stream', { provider: 'openai', model: 'primary', messages: [{ role: 'user', content: 'hello' }], fallbacks: [{ provider: 'custom', model: 'backup', baseUrl: 'https://attacker.example/v1' }] });
+      assert.deepEqual(requests.map(r => r.model), ['primary', 'primary', 'backup']);
+      assert.equal(requests[2].url, 'https://trusted.example/v1/chat/completions');
+      assert(output.includes('"provider":"custom"'));
+      assert(output.includes('"model":"backup"'));
+    }
+    scenario = 'bad'; requests.length = 0;
+    const rejected = await post('/api/chat/stream', { provider: 'openai', model: 'primary', messages: [], fallbacks: [{ provider: 'custom', model: 'backup' }] });
+    assert.deepEqual(requests.map(r => r.model), ['primary']);
+    assert(rejected.includes('bad credentials'));
+    scenario = 'partial'; requests.length = 0;
+    const partial = await post('/api/chat/stream', { provider: 'openai', model: 'primary', messages: [], fallbacks: [{ provider: 'custom', model: 'backup' }] });
+    assert.deepEqual(requests.map(r => r.model), ['primary']);
+    assert(partial.includes('busy'));
   } finally {
     global.fetch = originalFetch;
     await new Promise<void>(resolve => server.close(() => resolve()));

@@ -102,6 +102,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
           {/* Header meta */}
           <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             <span className="text-sm font-bold text-slate-200 tracking-tight">{agent.name}</span>
+            {message.model && message.status !== 'error' && <span className="text-[10px] text-slate-400">Answered by {message.provider} · {message.model}</span>}
             <span
               className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${
                 isHanex

@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const PROVIDERS = ['gemini', 'openai', 'anthropic', 'openrouter'];
+const PROVIDERS = ['gemini', 'openai', 'anthropic', 'openrouter', 'custom'];
 
 function createVault(safeStorage, file) {
   function check() {
@@ -50,6 +50,15 @@ function createVault(safeStorage, file) {
       write(data);
       return Object.fromEntries(PROVIDERS.map(p => [p, Boolean(data[p])]));
     },
+    setCustomEndpoint(value) {
+      check();
+      if (typeof value !== 'string' || value.length > 2048) throw new Error('Invalid endpoint.');
+      let url;
+      try { url = new URL(value); } catch { throw new Error('Enter a valid URL.'); }
+      if (url.username || url.password || url.search || url.hash || !(url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) throw new Error('Use HTTPS, or HTTP for localhost, without credentials, query, or fragment.');
+      const data = read(); data.customEndpoint = url.toString().replace(/\/+$/, ''); write(data); return data.customEndpoint;
+    },
+    getCustomEndpoint() { check(); return typeof read().customEndpoint === 'string' ? read().customEndpoint : ''; },
     getForServer(provider) {
       check(); validProvider(provider); const encrypted = read()[provider];
       return encrypted ? safeStorage.decryptString(Buffer.from(encrypted, 'base64')) : '';

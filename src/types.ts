@@ -1,6 +1,6 @@
 export type AgentId = 'hanex' | 'shumex';
 
-export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama';
+export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'custom';
 
 export interface ModelOption {
   id: string;
@@ -15,7 +15,9 @@ export interface ProviderSettings {
   id: ProviderId;
   enabled: boolean;
   apiKey: string;
-  baseUrl?: string; // for Ollama
+  baseUrl?: string;
+  customName?: string;
+  customModel?: string;
   freeOnlyFilter?: boolean; // for OpenRouter
 }
 
@@ -74,6 +76,7 @@ export interface AppSettings {
   model: string; // Legacy default
   providers: Record<ProviderId, ProviderSettings>;
   openRouterFreeOnly: boolean;
+  fallbacks: AgentModelSelection[];
   soundEffects: boolean;
   confettiEffects: boolean;
   speechSynthesis: boolean;

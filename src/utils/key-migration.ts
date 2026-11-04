@@ -3,7 +3,7 @@ export async function migrateSavedKeys(storage: Pick<Storage, 'getItem' | 'setIt
   const raw = storage.getItem(storageKey);
   const legacy = raw ? JSON.parse(raw) : {};
   const keys: Record<string, string> = {};
-  for (const id of ['gemini', 'openai', 'anthropic', 'openrouter']) {
+  for (const id of ['gemini', 'openai', 'anthropic', 'openrouter', 'custom']) {
     const key = legacy.providers?.[id]?.apiKey || (id === 'gemini' ? legacy.apiKey : '');
     if (typeof key === 'string' && key.trim()) keys[id] = key;
   }

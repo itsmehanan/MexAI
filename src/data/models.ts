@@ -58,6 +58,7 @@ export const PROVIDERS_META: Record<ProviderId, ProviderMeta> = {
     borderColor: 'border-purple-500/30',
     badgeBg: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
   },
+  custom: { id: 'custom', name: 'Custom (OpenAI-compatible)', tagline: 'Your own endpoint', description: 'Use an OpenAI-compatible chat completions API.', keyPlaceholder: 'API key', keyHelp: 'Keys are stored securely in the desktop app.', accentColor: '#a78bfa', borderColor: 'border-purple-500/30', badgeBg: 'bg-purple-500/15 text-purple-300 border-purple-500/30' },
   ollama: {
     id: 'ollama',
     name: 'Ollama (Local)',
@@ -73,6 +74,7 @@ export const PROVIDERS_META: Record<ProviderId, ProviderMeta> = {
 };
 
 export const DEFAULT_PROVIDER_MODELS: Record<ProviderId, ModelOption[]> = {
+  custom: [],
   gemini: [
     {
       id: 'gemini-3.8-flash',

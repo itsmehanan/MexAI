@@ -16,7 +16,7 @@ test('vault encrypts, migrates idempotently, masks status, and fails closed', ()
     assert.equal(vault.migrate({ gemini: 'original-secret', openai: 'openai-secret' }).gemini, true);
     assert(!fs.readFileSync(file, 'utf8').includes('original-secret'));
     assert.equal(vault.getForServer('gemini'), 'original-secret');
-    assert.deepEqual(vault.status(), { gemini: true, openai: true, anthropic: false, openrouter: false });
+    assert.deepEqual(vault.status(), { gemini: true, openai: true, anthropic: false, openrouter: false, custom: false });
     vault.set('gemini', 'replacement');
     vault.migrate({ gemini: 'stale-legacy' });
     assert.equal(vault.getForServer('gemini'), 'replacement');
@@ -27,6 +27,12 @@ test('vault encrypts, migrates idempotently, masks status, and fails closed', ()
     assert.throws(() => vault.status());
     available = true;
     assert.equal(vault.getForServer('gemini'), 'replacement');
+    assert.throws(() => vault.setCustomEndpoint('http://example.com/v1'));
+    assert.throws(() => vault.setCustomEndpoint('https://user:pass@example.com/v1'));
+    assert.equal(vault.setCustomEndpoint('https://example.com/v1/'), 'https://example.com/v1');
+    vault.set('custom', 'custom-secret');
+    assert.equal(vault.getCustomEndpoint(), 'https://example.com/v1');
+    assert.equal(vault.getForServer('custom'), 'custom-secret');
     vault.remove('gemini');
     assert.equal(vault.getForServer('gemini'), '');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }

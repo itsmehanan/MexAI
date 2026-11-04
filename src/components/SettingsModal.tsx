@@ -62,6 +62,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   ollamaModelsCount = 0,
 }) => {
   const [activeTab, setActiveTab] = useState<'models' | 'voice' | 'general' | 'data'>('models');
+  const [customUrlDraft, setCustomUrlDraft] = useState(settings.providers.custom?.baseUrl || '');
+  const [customUrlMessage, setCustomUrlMessage] = useState('');
   const [draftKeys, setDraftKeys] = useState<Record<string, string>>({});
   const [keyMessage, setKeyMessage] = useState<Record<string, string>>({});
 
@@ -73,6 +75,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     anthropic: { status: 'idle', message: '' },
     openrouter: { status: 'idle', message: '' },
     ollama: { status: 'idle', message: '' },
+    custom: { status: 'idle', message: '' },
   });
 
   if (!isOpen) return null;
@@ -116,6 +119,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider: id,
+          model: id === 'custom' ? prov.customModel : undefined,
           baseUrl: prov.baseUrl || 'http://localhost:11434',
         }),
       });
@@ -149,12 +153,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         return <Cpu className="w-4 h-4 text-amber-400" />;
       case 'openrouter':
         return <Globe className="w-4 h-4 text-purple-400" />;
+      case 'custom':
+        return <Globe className="w-4 h-4 text-purple-400" />;
       case 'ollama':
         return <HardDrive className="w-4 h-4 text-orange-400" />;
     }
   };
 
-  const providerList: ProviderId[] = ['gemini', 'openai', 'anthropic', 'openrouter', 'ollama'];
+  const providerList: ProviderId[] = ['gemini', 'openai', 'anthropic', 'openrouter', 'ollama', 'custom'];
 
   return (
     <AnimatePresence>
@@ -246,6 +252,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   )}
                 </div>
 
+                <div className="p-4 rounded-2xl border border-white/10 space-y-2">
+                  <h4 className="font-bold text-sm">Fallback order</h4><p className="text-xs text-slate-400">On a 429, 503 or empty response, retry once, then try enabled entries in this order. Each fallback receives the conversation and may have different privacy or billing terms. Partial answers are not retried.</p>
+                  {(settings.fallbacks || []).map((entry, index) => <div key={index} className="flex flex-wrap gap-2 items-center">
+                    <select aria-label={`Fallback ${index + 1} provider`} value={entry.provider} onChange={e => { const next = [...settings.fallbacks]; next[index] = { ...entry, provider: e.target.value as ProviderId }; onSaveSettings({ fallbacks: next }); }} className="bg-slate-800 rounded-lg p-2 text-xs">{providerList.map(p => <option key={p} value={p}>{PROVIDERS_META[p].name}</option>)}</select>
+                    <input aria-label={`Fallback ${index + 1} model`} value={entry.model} placeholder="Model name" onChange={e => { const next = [...settings.fallbacks]; next[index] = { ...entry, model: e.target.value }; onSaveSettings({ fallbacks: next }); }} className="bg-slate-800 rounded-lg p-2 text-xs flex-1 min-w-32" />
+                    <button type="button" disabled={index === 0} onClick={() => { const next = [...settings.fallbacks]; [next[index - 1], next[index]] = [next[index], next[index - 1]]; onSaveSettings({ fallbacks: next }); }} className="text-xs disabled:opacity-30">↑</button>
+                    <button type="button" disabled={index === settings.fallbacks.length - 1} onClick={() => { const next = [...settings.fallbacks]; [next[index + 1], next[index]] = [next[index], next[index + 1]]; onSaveSettings({ fallbacks: next }); }} className="text-xs disabled:opacity-30">↓</button>
+                    <button type="button" onClick={() => onSaveSettings({ fallbacks: settings.fallbacks.filter((_, i) => i !== index) })} className="text-xs text-rose-300">Remove</button>
+                  </div>)}
+                  <button type="button" onClick={() => onSaveSettings({ fallbacks: [...(settings.fallbacks || []), { provider: 'gemini', model: '' }] })} className="text-xs text-cyan-300">+ Add fallback</button>
+                </div>
                 {keyStorageError && <p role="alert" className="text-xs text-amber-300">{keyStorageError}</p>}
                 <div className="space-y-3">
                   {providerList.map((id) => {
@@ -313,6 +330,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         {/* Input & Testing Controls when Enabled */}
                         {isEnabled && (
                           <div className="space-y-3 pt-2 border-t border-white/5">
+                            {id === 'custom' && <div className="space-y-2">
+                              <label className="block text-xs text-slate-300">Provider name<input aria-label="Custom provider name" value={provConfig.customName || ''} onChange={e => handleUpdateProvider(id, { customName: e.target.value })} className="mt-1 w-full bg-[#0a0f1c] border border-white/15 rounded-xl px-3 py-2 text-xs text-white" /></label>
+                              <label className="block text-xs text-slate-300">Model name<input aria-label="Custom model name" value={provConfig.customModel || ''} onChange={e => handleUpdateProvider(id, { customModel: e.target.value })} className="mt-1 w-full bg-[#0a0f1c] border border-white/15 rounded-xl px-3 py-2 text-xs text-white" /></label>
+                              <label className="block text-xs text-slate-300">Base URL (HTTPS, or HTTP on localhost)<input aria-label="Custom base URL" value={customUrlDraft} onChange={e => setCustomUrlDraft(e.target.value)} className="mt-1 w-full bg-[#0a0f1c] border border-white/15 rounded-xl px-3 py-2 text-xs text-white" /></label>
+                              <button type="button" disabled={!secureStorageAvailable} onClick={async () => { try { if (!window.secureKeys) throw new Error(); const url = await window.secureKeys.setCustomEndpoint(customUrlDraft); handleUpdateProvider('custom', { baseUrl: url }); setCustomUrlDraft(url); setCustomUrlMessage('Endpoint saved.'); } catch { setCustomUrlMessage('Could not save URL. Use HTTPS or localhost HTTP without credentials, query, or fragment.'); } }} className="px-3 py-1.5 rounded-full bg-white/10 text-xs disabled:opacity-40">Save endpoint</button> <span className="text-xs text-slate-400">{customUrlMessage}</span>
+                            </div>}
                             <div>
                               <div className="flex items-center justify-between mb-1.5">
                                 <label className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">

@@ -183,6 +183,7 @@ async function startDesktop() {
     'keys:save': (provider, key) => vault.set(provider, key),
     'keys:remove': provider => vault.remove(provider),
     'keys:clear': () => vault.clear(),
+    'keys:custom-endpoint': url => vault.setCustomEndpoint(url),
     'keys:migrate': keys => vault.migrate(keys),
   })) ipcMain.handle(channel, (event, ...args) => {
     if (!trustedChat(event)) throw new Error('Unauthorized key request.');
@@ -203,8 +204,8 @@ async function startDesktop() {
   serverProcess = child;
   // The utility process asks the main process directly; decrypted keys never travel to the renderer.
   child.on('message', message => {
-    if (message?.type !== 'secure-key-request' || typeof message.id !== 'string') return;
-    try { child.postMessage({ type: 'secure-key-response', id: message.id, key: vault.getForServer(message.provider) }); }
+    if (!['secure-key-request', 'secure-endpoint-request'].includes(message?.type) || typeof message.id !== 'string') return;
+    try { child.postMessage({ type: 'secure-key-response', id: message.id, key: message.type === 'secure-endpoint-request' ? vault.getCustomEndpoint() : vault.getForServer(message.provider) }); }
     catch { child.postMessage({ type: 'secure-key-response', id: message.id, error: 'Secure key storage is unavailable.' }); }
   });
   child.stdout?.pipe(process.stdout, { end: false });
