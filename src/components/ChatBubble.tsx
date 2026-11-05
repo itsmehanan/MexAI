@@ -126,7 +126,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
                 <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-rose-400" />
                 <div className="text-xs leading-relaxed">
                   <p className="font-semibold mb-0.5">Response interrupted</p>
-                  <p className="text-slate-300">{message.error || message.content}</p>
+                  <p className="text-slate-300 whitespace-pre-wrap break-words">{message.error || message.content}</p>
                 </div>
               </div>
             ) : (

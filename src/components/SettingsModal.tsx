@@ -236,27 +236,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </p>
                   </div>
 
-                  {settings.providers.openrouter?.enabled && (
-                    <button
-                      onClick={() =>
-                        onSaveSettings({ openRouterFreeOnly: !settings.openRouterFreeOnly })
-                      }
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition cursor-pointer ${
-                        settings.openRouterFreeOnly
-                          ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
-                          : 'bg-white/5 text-slate-400 border-white/10 hover:text-white'
-                      }`}
-                      title="Filter OpenRouter models to free tier only"
-                    >
-                      <Filter className="w-3 h-3" />
-                      <span>Free Models Only</span>
-                      {settings.openRouterFreeOnly && <Check className="w-3 h-3 text-purple-400" />}
-                    </button>
-                  )}
+
                 </div>
 
                 <div className="p-4 rounded-2xl border border-white/10 space-y-2">
-                  <h4 className="font-bold text-sm">Fallback order</h4><p className="text-xs text-slate-400">On a 429, 503 or empty response, retry once, then try enabled entries in this order. Each fallback receives the conversation and may have different privacy or billing terms. Partial answers are not retried.</p>
+                  <h4 className="font-bold text-sm">Fallback order</h4><p className="text-xs text-slate-400">On 429, 503 or empty replies, retry once; other model or network errors move to the next enabled entry. Invalid or missing API keys stop fallback. Each fallback receives the conversation and may have different privacy or billing terms. Interrupted partial answers are replaced.</p>
                   {(settings.fallbacks || []).map((entry, index) => <div key={index} className="flex flex-wrap gap-2 items-center">
                     <select aria-label={`Fallback ${index + 1} provider`} value={entry.provider} onChange={e => { const next = [...settings.fallbacks]; next[index] = { ...entry, provider: e.target.value as ProviderId }; onSaveSettings({ fallbacks: next }); }} className="bg-slate-800 rounded-lg p-2 text-xs">{providerList.map(p => <option key={p} value={p}>{PROVIDERS_META[p].name}</option>)}</select>
                     <input aria-label={`Fallback ${index + 1} model`} value={entry.model} placeholder="Model name" onChange={e => { const next = [...settings.fallbacks]; next[index] = { ...entry, model: e.target.value }; onSaveSettings({ fallbacks: next }); }} className="bg-slate-800 rounded-lg p-2 text-xs flex-1 min-w-32" />
@@ -335,7 +319,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <div className="space-y-3 pt-2 border-t border-white/5">
                             {id === 'openrouter' && <div>
                               <label className="block text-xs text-slate-300">OpenRouter model ID<input aria-label="OpenRouter model ID" value={provConfig.openRouterModelId ?? 'openrouter/free'} onChange={e => handleUpdateProvider(id, { openRouterModelId: e.target.value })} placeholder="openrouter/free" className="mt-1 w-full bg-[#0a0f1c] border border-white/15 rounded-xl px-3 py-2 text-xs text-white" /></label>
-                              <p className="mt-1 text-xs text-slate-400">This ID appears in the chat model menu even when Free Models Only is on. Check OpenRouter pricing before selecting it.</p>
+                              <p className="mt-1 text-xs text-slate-400">This ID appears in the chat model menu. Live catalog models are verified free; manually entered IDs may incur charges.</p>
                             </div>}
                             {id === 'custom' && <div className="space-y-2">
                               <label className="block text-xs text-slate-300">Provider name<input aria-label="Custom provider name" value={provConfig.customName || ''} onChange={e => handleUpdateProvider(id, { customName: e.target.value })} className="mt-1 w-full bg-[#0a0f1c] border border-white/15 rounded-xl px-3 py-2 text-xs text-white" /></label>

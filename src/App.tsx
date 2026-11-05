@@ -152,6 +152,23 @@ export default function App() {
   const [ollamaModels, setOllamaModels] = useState<ModelOption[]>([]);
   const [isFetchingOllama, setIsFetchingOllama] = useState(false);
 
+  const [openRouterModels, setOpenRouterModels] = useState<ModelOption[]>([]);
+  const [isFetchingOpenRouter, setIsFetchingOpenRouter] = useState(false);
+  const [openRouterError, setOpenRouterError] = useState('');
+  const fetchOpenRouterModels = useCallback(async (refresh = false) => {
+    setIsFetchingOpenRouter(true);
+    setOpenRouterError('');
+    try {
+      const res = await fetch(`/api/providers/openrouter/models${refresh ? '?refresh=1' : ''}`);
+      if (!res.ok) throw new Error('Could not load live free models.');
+      const data = await res.json();
+      if (!Array.isArray(data.models)) throw new Error('Invalid model catalog.');
+      setOpenRouterModels(data.models);
+    } catch { setOpenRouterModels([]); setOpenRouterError('Could not load live free models. Try refreshing.'); }
+    finally { setIsFetchingOpenRouter(false); }
+  }, []);
+  useEffect(() => { if (settings.providers.openrouter?.enabled) void fetchOpenRouterModels(); }, [settings.providers.openrouter?.enabled, fetchOpenRouterModels]);
+
   // Modals state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isQuickSwitcherOpen, setIsQuickSwitcherOpen] = useState(false);
@@ -390,7 +407,10 @@ export default function App() {
             if (!jsonStr) continue;
             try {
               const data = JSON.parse(jsonStr);
-              if (data.answeringModel) {
+              if (data.reset) {
+                accumulatedText = '';
+                setMessages(prev => ({ ...prev, [activeAgentId]: prev[activeAgentId].map(m => m.id === assistantPlaceholderId ? { ...m, content: '', provider: undefined, model: undefined } : m) }));
+              } else if (data.answeringModel) {
                 setMessages(prev => ({ ...prev, [activeAgentId]: prev[activeAgentId].map(m => m.id === assistantPlaceholderId ? { ...m, provider: data.answeringModel.provider, model: data.answeringModel.model } : m) }));
               } else if (data.error) {
                 streamError = data.error;
@@ -637,10 +657,10 @@ export default function App() {
         selectedModel={activeModelSelection}
         onSelectModel={handleSelectModelForActiveAgent}
         providers={settings.providers}
-        openRouterFreeOnly={settings.openRouterFreeOnly}
-        onToggleFreeOnly={() =>
-          handleSaveSettings({ openRouterFreeOnly: !settings.openRouterFreeOnly })
-        }
+        openRouterModels={openRouterModels}
+        isFetchingOpenRouter={isFetchingOpenRouter}
+        openRouterError={openRouterError}
+        onRefreshOpenRouter={() => fetchOpenRouterModels(true)}
         ollamaModels={ollamaModels}
         isFetchingOllama={isFetchingOllama}
         onRefreshOllama={() => fetchOllamaModels()}

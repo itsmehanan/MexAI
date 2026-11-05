@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import type { Server } from 'http';
 import { randomUUID } from 'node:crypto';
+import { getFreeOpenRouterModels } from './server/openrouter';
 import { GoogleGenAI } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -117,6 +118,12 @@ app.get('/api/status', (_req: Request, res: Response) => {
       ollama: true, // Always testable locally
     },
   });
+});
+
+// OpenRouter's public catalog; only verified zero-priced models are returned.
+app.get('/api/providers/openrouter/models', async (req: Request, res: Response) => {
+  try { res.json({ models: await getFreeOpenRouterModels(req.query.refresh === '1') }); }
+  catch { res.status(502).json({ error: 'Could not load the OpenRouter model catalog. Please try refreshing.' }); }
 });
 
 // Fetch installed Ollama models
@@ -322,7 +329,8 @@ async function* streamGemini(
   apiKey: string,
   modelName: string,
   messages: any[],
-  systemInstruction: string
+  systemInstruction: string,
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
   const ai = new GoogleGenAI({
     apiKey,
@@ -341,7 +349,7 @@ async function* streamGemini(
   const responseStream = await ai.models.generateContentStream({
     model: modelName,
     contents: formattedContents,
-    config: { systemInstruction },
+    config: { systemInstruction, abortSignal: signal },
   });
 
   let chunkCount = 0;
@@ -381,7 +389,8 @@ async function* streamOpenAI(
   modelName: string,
   messages: any[],
   systemInstruction: string,
-  endpoint = 'https://api.openai.com/v1'
+  endpoint = 'https://api.openai.com/v1',
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
   const formattedMessages = [
     { role: 'system', content: systemInstruction },
@@ -392,6 +401,7 @@ async function* streamOpenAI(
   ];
 
   const resp = await fetch(`${endpoint}/chat/completions`, {
+    signal,
     redirect: 'error',
     method: 'POST',
     headers: {
@@ -414,6 +424,8 @@ async function* streamOpenAI(
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let completed = false;
+  let hadContent = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -424,18 +436,18 @@ async function* streamOpenAI(
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed || trimmed === 'data: [DONE]') continue;
+      if (!trimmed) continue;
+      if (trimmed === 'data: [DONE]') { completed = true; continue; }
       if (trimmed.startsWith('data: ')) {
-        try {
-          const parsed = JSON.parse(trimmed.slice(6));
-          const content = parsed.choices?.[0]?.delta?.content;
-          if (content) yield content;
-        } catch (err) {
-          console.warn('OpenAI stream JSON parse error:', err);
-        }
+        let parsed: any;
+        try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
+        if (parsed.error) throw new ProviderHttpError(Number(parsed.error.code) || 500, parsed.error.message || 'Provider stream error.');
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) { hadContent = true; yield content; }
       }
     }
   }
+  if (!completed) throw new Error(hadContent ? 'Stream ended before completion.' : 'Empty response.');
 }
 
 // Anthropic Claude Stream
@@ -443,7 +455,8 @@ async function* streamAnthropic(
   apiKey: string,
   modelName: string,
   messages: any[],
-  systemInstruction: string
+  systemInstruction: string,
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
   // Anthropic messages cannot contain 'system' role; pass system at top level
   const formattedMessages: { role: 'user' | 'assistant'; content: string }[] = [];
@@ -459,6 +472,7 @@ async function* streamAnthropic(
   }
 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    signal,
     method: 'POST',
     headers: {
       'x-api-key': apiKey,
@@ -483,6 +497,8 @@ async function* streamAnthropic(
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let completed = false;
+  let hadContent = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -496,18 +512,16 @@ async function* streamAnthropic(
       for (const line of lines) {
         const trimmed = line.trim();
         if (trimmed.startsWith('data: ')) {
-          try {
-            const parsed = JSON.parse(trimmed.slice(6));
-            if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
-              yield parsed.delta.text;
-            }
-          } catch (err) {
-            console.warn('Anthropic stream parse error:', err);
-          }
+          let parsed: any;
+          try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
+          if (parsed.type === 'message_stop') completed = true;
+          if (parsed.type === 'error' || parsed.error) throw new ProviderHttpError(Number(parsed.error?.code) || 500, parsed.error?.message || 'Anthropic stream error.');
+          if (parsed.type === 'content_block_delta' && parsed.delta?.text) { hadContent = true; yield parsed.delta.text; }
         }
       }
     }
   }
+  if (!completed) throw new Error(hadContent ? 'Stream ended before completion.' : 'Empty response.');
 }
 
 // OpenRouter Stream
@@ -515,7 +529,8 @@ async function* streamOpenRouter(
   apiKey: string,
   modelName: string,
   messages: any[],
-  systemInstruction: string
+  systemInstruction: string,
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
   const formattedMessages = [
     { role: 'system', content: systemInstruction },
@@ -526,6 +541,7 @@ async function* streamOpenRouter(
   ];
 
   const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    signal,
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -549,6 +565,8 @@ async function* streamOpenRouter(
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let completed = false;
+  let hadContent = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -559,18 +577,18 @@ async function* streamOpenRouter(
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed || trimmed === 'data: [DONE]') continue;
+      if (!trimmed) continue;
+      if (trimmed === 'data: [DONE]') { completed = true; continue; }
       if (trimmed.startsWith('data: ')) {
-        try {
-          const parsed = JSON.parse(trimmed.slice(6));
-          const content = parsed.choices?.[0]?.delta?.content;
-          if (content) yield content;
-        } catch (err) {
-          console.warn('OpenRouter stream parse error:', err);
-        }
+        let parsed: any;
+        try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
+        if (parsed.error) throw new ProviderHttpError(Number(parsed.error.code) || 500, parsed.error.message || 'OpenRouter stream error.');
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) { hadContent = true; yield content; }
       }
     }
   }
+  if (!completed) throw new Error(hadContent ? 'Stream ended before completion.' : 'Empty response.');
 }
 
 // Ollama Stream
@@ -578,7 +596,8 @@ async function* streamOllama(
   baseUrl: string,
   modelName: string,
   messages: any[],
-  systemInstruction: string
+  systemInstruction: string,
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
   const host = (baseUrl || 'http://localhost:11434').replace(/\/+$/, '');
   const formattedMessages = [
@@ -590,6 +609,7 @@ async function* streamOllama(
   ];
 
   const resp = await fetch(`${host}/api/chat`, {
+    signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -608,6 +628,8 @@ async function* streamOllama(
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let completed = false;
+  let hadContent = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -619,16 +641,14 @@ async function* streamOllama(
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed.message?.content) {
-          yield parsed.message.content;
-        }
-      } catch (err) {
-        console.warn('Ollama stream parse error:', err);
-      }
+      let parsed: any;
+      try { parsed = JSON.parse(trimmed); } catch { continue; }
+      if (parsed.done) completed = true;
+      if (parsed.error) throw new Error(String(parsed.error));
+      if (parsed.message?.content) { hadContent = true; yield parsed.message.content; }
     }
   }
+  if (!completed) throw new Error(hadContent ? 'Stream ended before completion.' : 'Empty response.');
 }
 
 // Unified Stream Dispatcher
@@ -638,7 +658,8 @@ async function* streamProvider(
   messages: any[],
   systemInstruction: string,
   providerConfig?: { apiKey?: string; baseUrl?: string },
-  key: string = ''
+  key: string = '',
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
 
   if (provider !== 'ollama' && !key) {
@@ -649,100 +670,145 @@ async function* streamProvider(
 
   switch (provider) {
     case 'gemini':
-      yield* streamGemini(key, model || 'gemini-3.8-flash', messages, systemInstruction);
+      yield* streamGemini(key, model || 'gemini-3.8-flash', messages, systemInstruction, signal);
       break;
     case 'openai':
-      yield* streamOpenAI(key, model || 'gpt-4o', messages, systemInstruction);
+      yield* streamOpenAI(key, model || 'gpt-4o', messages, systemInstruction, undefined, signal);
       break;
     case 'custom':
       if (!model?.trim()) throw new Error('Enter a custom model name in Settings.');
-      yield* streamOpenAI(key, model, messages, systemInstruction, await customEndpoint());
+      yield* streamOpenAI(key, model, messages, systemInstruction, await customEndpoint(), signal);
       break;
     case 'anthropic':
-      yield* streamAnthropic(key, model || 'claude-3-7-sonnet-20250219', messages, systemInstruction);
+      yield* streamAnthropic(key, model || 'claude-3-7-sonnet-20250219', messages, systemInstruction, signal);
       break;
     case 'openrouter':
-      yield* streamOpenRouter(key, model || 'openrouter/free', messages, systemInstruction);
+      yield* streamOpenRouter(key, model || 'openrouter/free', messages, systemInstruction, signal);
       break;
     case 'ollama':
-      yield* streamOllama(providerConfig?.baseUrl || 'http://localhost:11434', model || 'llama3.2', messages, systemInstruction);
+      yield* streamOllama(providerConfig?.baseUrl || 'http://localhost:11434', model || 'llama3.2', messages, systemInstruction, signal);
       break;
     default:
       throw new Error(`Unsupported provider: ${provider}`);
   }
 }
 
-// Retry before emitting an answer; never combine partial replies from different models.
+function isCredentialError(error: any): boolean {
+  const status = Number(error?.status ?? error?.statusCode ?? error?.code);
+  const message = formatErrorMessage(error).toLowerCase();
+  if (/\b(?:invalid|incorrect|missing|expired|revoked|unauthorized)\b.{0,40}\b(?:api[ -]?key|credential|token)\b|\b(?:api[ -]?key|credential|token)\b.{0,40}\b(?:invalid|incorrect|missing|expired|revoked|not valid)\b/.test(message)) return true;
+  return status === 401;
+}
+const DEFAULT_CHAT_MODELS: Record<ProviderType, string> = {
+  gemini: 'gemini-3.8-flash', openai: 'gpt-4o', anthropic: 'claude-3-7-sonnet-20250219',
+  openrouter: 'openrouter/free', ollama: 'llama3.2', custom: '',
+};
+
+// Each failed answer is replaced before the next model starts, never concatenated.
 app.post('/api/chat/stream', async (req: Request, res: Response) => {
   const { agentId, messages, provider, model, providerConfig, customKey } = req.body;
   const p = (provider || 'gemini') as ProviderType;
   const systemInstruction = AGENT_SYSTEM_PROMPTS[agentId === 'shumex' ? 'shumex' : 'hanex'];
   const supported = new Set(['gemini', 'openai', 'anthropic', 'openrouter', 'ollama', 'custom']);
-  const primary = { provider: p, model: typeof model === 'string' ? model : '', providerConfig: { apiKey: providerConfig?.apiKey || customKey, baseUrl: providerConfig?.baseUrl } };
+  const primary = { provider: p, model: typeof model === 'string' && model.trim() ? model.trim() : (DEFAULT_CHAT_MODELS[p] || ''), providerConfig: { apiKey: providerConfig?.apiKey || customKey, baseUrl: providerConfig?.baseUrl } };
   const candidates = [primary];
+  const seen = new Set([`${p}:${primary.model}`]);
   if (Array.isArray(req.body.fallbacks)) {
-    const seen = new Set([`${p}:${primary.model}`]);
     for (const item of req.body.fallbacks.slice(0, 20)) {
       if (!item || !supported.has(item.provider) || typeof item.model !== 'string' || !item.model.trim() || item.model.length > 256) continue;
-      const id = `${item.provider}:${item.model}`;
+      const id = `${item.provider}:${item.model.trim()}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      candidates.push({ provider: item.provider, model: item.model, providerConfig: { apiKey: undefined, baseUrl: item.baseUrl } });
+      candidates.push({ provider: item.provider, model: item.model.trim(), providerConfig: { apiKey: undefined, baseUrl: item.baseUrl } });
     }
   }
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  let disconnected = false;
-  res.on('close', () => { disconnected = true; });
-  const send = (value: object) => { if (!disconnected) res.write(`data: ${JSON.stringify(value)}\n\n`); };
-  let lastError = 'The model returned an empty response.';
-  for (let index = 0; index < candidates.length && !disconnected; index++) {
+  const disconnect = new AbortController();
+  res.on('close', () => disconnect.abort());
+  const send = (value: object) => { if (!disconnect.signal.aborted) res.write(`data: ${JSON.stringify(value)}\n\n`); };
+  const tried: string[] = [];
+  let freeModels: Awaited<ReturnType<typeof getFreeOpenRouterModels>> | undefined;
+  let catalogError = false;
+  let addedFree = false;
+  let stoppedForKey = false;
+  const retried = new Set<string>();
+  for (let index = 0; index < candidates.length && !disconnect.signal.aborted; index++) {
     const candidate = candidates[index];
+    const label = `${candidate.provider} / ${candidate.model || '(default)'}`;
     let key = '';
-    try { key = await resolveApiKey(candidate.provider, candidate.providerConfig.apiKey); }
-    catch { if (index === 0) { send({ error: 'Secure key storage is unavailable.' }); break; } continue; }
-    if (candidate.provider !== 'ollama' && !key) {
-      if (index === 0) { send({ error: `API key for ${candidate.provider.toUpperCase()} is missing. Please add it in Settings.` }); break; }
-      continue;
-    }
-    for (let attempt = 0; attempt < 2 && !disconnected; attempt++) {
+    let reason = '';
+    let committed = false;
+    try {
+      if (!supported.has(candidate.provider)) throw new Error('Unsupported provider.');
+      key = await resolveApiKey(candidate.provider, candidate.providerConfig.apiKey);
+      if (candidate.provider !== 'ollama' && !key) {
+        stoppedForKey = true;
+        throw new Error('Missing API key. Add it in Settings.');
+      }
       let pending = '';
-      let committed = false;
-      try {
-        const stream = streamProvider(candidate.provider, candidate.model, messages || [], systemInstruction, candidate.providerConfig, key);
-        for await (const chunk of stream) {
-          if (disconnected) break;
-          pending += chunk;
-          if (key && pending.includes(key)) pending = redact(pending, key);
-          if (!committed && pending.trim()) {
-            committed = true;
-            send({ answeringModel: { provider: candidate.provider, model: candidate.model } });
-          }
-          if (committed) {
-            const n = key ? Math.max(0, pending.length - key.length + 1) : pending.length;
-            if (n) { send({ text: pending.slice(0, n) }); pending = pending.slice(n); }
-          }
+      const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(120_000)]);
+      const stream = streamProvider(candidate.provider, candidate.model, messages || [], systemInstruction, candidate.providerConfig, key, signal);
+      for await (const chunk of stream) {
+        if (disconnect.signal.aborted) break;
+        pending += chunk;
+        if (key && pending.includes(key)) pending = redact(pending, key);
+        if (!committed && pending.trim()) {
+          committed = true;
+          send({ answeringModel: { provider: candidate.provider, model: candidate.model } });
         }
-        if (disconnected) break;
-        if (!committed) { lastError = 'The model returned an empty response.'; continue; }
-        if (pending) send({ text: redact(pending, key) });
-        send({ done: true });
-        res.end();
-        return;
-      } catch (error: any) {
-        lastError = formatErrorMessage(error, key);
-        // Retrying after text was delivered could silently duplicate or splice answers.
-        if (committed) { send({ error: lastError }); res.end(); return; }
-        let status = Number(error?.status ?? error?.statusCode ?? error?.code);
-        if (!status && typeof error?.message === 'string') {
-          try { status = Number(JSON.parse(error.message)?.error?.code); } catch { /* Not a JSON provider error. */ }
+        if (committed) {
+          const n = key ? Math.max(0, pending.length - key.length + 1) : pending.length;
+          if (n) { send({ text: pending.slice(0, n) }); pending = pending.slice(n); }
         }
-        if (status !== 429 && status !== 503) { send({ error: lastError }); res.end(); return; }
+      }
+      if (disconnect.signal.aborted) break;
+      if (!committed) throw new Error('Empty response.');
+      if (pending) send({ text: redact(pending, key) });
+      send({ done: true }); res.end(); return;
+    } catch (error: any) {
+      if (disconnect.signal.aborted) break;
+      let status = Number(error?.status ?? error?.statusCode ?? error?.code);
+      if (!status && typeof error?.message === 'string') {
+        try { status = Number(JSON.parse(error.message)?.error?.code); } catch { /* Not a JSON provider error. */ }
+      }
+      const detail = formatErrorMessage(error, key).replace(/\s+/g, ' ').slice(0, 300) || 'Request failed.';
+      reason = Number.isInteger(status) && status >= 400 && status <= 599 ? `HTTP ${status}: ${detail}` : detail;
+      if (isCredentialError(error)) stoppedForKey = true;
+      tried.push(`${label}: ${reason}`);
+      if (committed) send({ reset: true });
+      // Preserve the single retry for transient throttling, overload and empty replies.
+      const retryId = `${candidate.provider}:${candidate.model}`;
+      const transient = status === 429 || status === 503 || detail === 'Empty response.';
+      if (!stoppedForKey && !committed && transient && !retried.has(retryId)) {
+        retried.add(retryId);
+        candidates.splice(index + 1, 0, candidate);
+        continue;
       }
     }
+    if (stoppedForKey) break;
+    if (candidate.provider === 'openrouter' && !addedFree) {
+      try {
+        freeModels ||= await getFreeOpenRouterModels(true);
+        if (candidate.model === 'openrouter/free' || candidate.model.endsWith(':free') || freeModels.some(m => m.id === candidate.model)) {
+          addedFree = true;
+          for (const free of freeModels) {
+            const id = `openrouter:${free.id}`;
+            if (seen.has(id)) continue;
+            seen.add(id);
+            candidates.push({ provider: 'openrouter', model: free.id, providerConfig: { apiKey: undefined, baseUrl: undefined } });
+          }
+        }
+      } catch { catalogError = true; }
+    }
   }
-  if (!disconnected && !res.writableEnded) { send({ error: lastError }); res.end(); }
+  if (!disconnect.signal.aborted && !res.writableEnded) {
+    const prefix = stoppedForKey ? 'Stopped: invalid or missing API key.' : 'No model could complete the request.';
+    const catalogNote = catalogError ? '\nCould not load the OpenRouter free-model catalog.' : '';
+    send({ error: `${prefix}\nTried:\n${tried.map(item => `• ${item}`).join('\n')}${catalogNote}` });
+    res.end();
+  }
 });
 
 // Unified Non-Streaming Fallback Endpoint

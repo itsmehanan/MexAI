@@ -25,8 +25,10 @@ interface DesktopHeaderProps {
   selectedModel: AgentModelSelection;
   onSelectModel: (selection: AgentModelSelection) => void;
   providers: Record<ProviderId, ProviderSettings>;
-  openRouterFreeOnly: boolean;
-  onToggleFreeOnly: () => void;
+  openRouterModels: ModelOption[];
+  isFetchingOpenRouter: boolean;
+  openRouterError: string;
+  onRefreshOpenRouter: () => void;
   ollamaModels: ModelOption[];
   isFetchingOllama: boolean;
   onRefreshOllama: () => void;
@@ -39,8 +41,7 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
   selectedModel,
   onSelectModel,
   providers,
-  openRouterFreeOnly,
-  onToggleFreeOnly,
+  openRouterModels, isFetchingOpenRouter, openRouterError, onRefreshOpenRouter,
   ollamaModels,
   isFetchingOllama,
   onRefreshOllama,
@@ -88,7 +89,7 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
     if (p === 'ollama') {
       return ollamaModels.length > 0 ? ollamaModels : DEFAULT_PROVIDER_MODELS.ollama;
     }
-    if (p === 'openrouter') return getOpenRouterModels(providers.openrouter?.openRouterModelId, openRouterFreeOnly, selectedModel.provider === 'openrouter' ? selectedModel.model : undefined);
+    if (p === 'openrouter') return getOpenRouterModels(providers.openrouter?.openRouterModelId, openRouterModels, selectedModel.provider === 'openrouter' ? selectedModel.model : undefined);
     return DEFAULT_PROVIDER_MODELS[p] || [];
   };
 
@@ -167,18 +168,8 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
               {(providers.openrouter?.enabled || providers.ollama?.enabled) && (
                 <div className="px-3 py-2 border-b border-white/5 bg-white/[0.02] flex items-center justify-between gap-2 text-xs">
                   {providers.openrouter?.enabled && (
-                    <button
-                      onClick={onToggleFreeOnly}
-                      className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium border transition cursor-pointer ${
-                        openRouterFreeOnly
-                          ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
-                          : 'bg-white/5 text-slate-400 border-white/5 hover:text-slate-200'
-                      }`}
-                      title="Show only free tier models on OpenRouter"
-                    >
-                      <Filter className="w-3 h-3" />
-                      <span>Free Models Only</span>
-                      {openRouterFreeOnly && <Check className="w-3 h-3 ml-0.5 text-purple-400" />}
+                    <button type="button" onClick={onRefreshOpenRouter} disabled={isFetchingOpenRouter} className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] bg-purple-500/10 text-purple-300 border border-purple-500/20 disabled:opacity-50" title="Refresh live free OpenRouter models">
+                      <RefreshCw className={`w-3 h-3 ${isFetchingOpenRouter ? 'animate-spin' : ''}`} /> {isFetchingOpenRouter ? 'Loading…' : 'Refresh free models'}
                     </button>
                   )}
 
@@ -196,6 +187,7 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
                 </div>
               )}
 
+              {openRouterError && providers.openrouter?.enabled && <p role="status" className="px-3 py-2 text-xs text-amber-300">{openRouterError}</p>}
               {/* Models List grouped by Provider */}
               <div className="overflow-y-auto p-2 space-y-3 flex-1 text-xs">
                 {enabledProvidersList.length === 0 ? (
