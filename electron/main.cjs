@@ -1,3 +1,4 @@
+const { createFolderSettings } = require('./folder-settings.cjs');
 const { app, BrowserWindow, dialog, utilityProcess, Tray, Menu, nativeImage, globalShortcut, screen, ipcMain, safeStorage, autoUpdater: electronAutoUpdater } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -180,6 +181,7 @@ function setupTray() {
 async function startDesktop() {
   await app.whenReady();
   vault = createVault(safeStorage, path.join(app.getPath('userData'), 'provider-keys.json'));
+  const folderSettings = createFolderSettings(path.join(app.getPath('userData'), 'allowed-folders.json'), dialog, () => mainWindow);
   const trustedChat = event => mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame && event.senderFrame.url.startsWith(`${APP_URL}/`);
   for (const [channel, action] of Object.entries({
     'keys:status': () => vault.status(),
@@ -199,6 +201,14 @@ async function startDesktop() {
   })) ipcMain.handle(channel, (event) => {
     if (!trustedChat(event)) throw new Error('Unauthorized update request.');
     return action();
+  });
+  for (const [channel, action] of Object.entries({
+    'folders:list': () => folderSettings.list(),
+    'folders:add': () => folderSettings.add(),
+    'folders:remove': folder => folderSettings.remove(folder),
+  })) ipcMain.handle(channel, (event, ...args) => {
+    if (!trustedChat(event)) throw new Error('Unauthorized folder settings request.');
+    return action(...args);
   });
   let updater = null;
   if (app.isPackaged && process.platform === 'win32') {

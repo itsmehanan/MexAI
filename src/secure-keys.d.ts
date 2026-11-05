@@ -23,3 +23,11 @@ interface Window {
     onState(callback: (state: DesktopUpdateState) => void): () => void;
   };
 }
+
+interface Window {
+  folderSettings?: {
+    list(): Promise<string[]>;
+    add(): Promise<string[]>;
+    remove(folder: string): Promise<string[]>;
+  };
+}

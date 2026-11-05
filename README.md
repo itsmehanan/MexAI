@@ -43,6 +43,10 @@ In desktop Settings, enable **Custom (OpenAI-compatible)**, enter its display na
 
 In Settings, add and reorder fallback provider/model entries. Only enabled providers are tried. A 429, 503, or empty reply is retried once; other model or network failures advance to the next entry; missing or invalid API keys stop fallback. The conversation is sent to each provider tried, so check its privacy and billing terms. Interrupted partial answers are replaced, not combined. The chat identifies the provider and model that responded or lists what was tried. OpenRouter’s dropdown can refresh its live zero-priced catalog; manually entered or previously selected IDs may not be free. If a free OpenRouter model fails, other live free models are tried after the configured fallback list.
 
+### File tools (not yet enabled)
+
+Desktop Settings can save a list of selected allowed folders (empty by default). This is configuration only: the agent cannot access those folders yet, and full access remains disabled. The existing experimental file tool module is not connected to chat because its path checks are vulnerable to concurrent filesystem changes. Do not expose it until race-resistant confinement, approvals, recycle-bin handling and audit enforcement are implemented and tested on the target OS.
+
 ### Publish a Windows update
 
 1. Bump `version` in `package.json` to a higher semantic version and update the lockfile (`bun install --lockfile-only`, if using Bun).

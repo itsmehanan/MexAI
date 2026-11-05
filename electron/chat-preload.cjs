@@ -18,3 +18,9 @@ contextBridge.exposeInMainWorld('desktopUpdates', {
     return () => ipcRenderer.removeListener('updates:state', listener);
   },
 });
+
+contextBridge.exposeInMainWorld('folderSettings', {
+  list: () => ipcRenderer.invoke('folders:list'),
+  add: () => ipcRenderer.invoke('folders:add'),
+  remove: folder => ipcRenderer.invoke('folders:remove', folder),
+});
