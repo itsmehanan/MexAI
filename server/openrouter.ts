@@ -1,4 +1,4 @@
-export interface FreeOpenRouterModel { id: string; name: string; provider: 'openrouter'; isFree: true }
+export interface FreeOpenRouterModel { id: string; name: string; provider: 'openrouter'; isFree: true; supportsTools: boolean }
 
 // Require known prompt/completion costs and reject any non-zero or unknown listed fee.
 export function parseFreeModels(data: unknown): FreeOpenRouterModel[] {
@@ -12,7 +12,7 @@ export function parseFreeModels(data: unknown): FreeOpenRouterModel[] {
     const zero = (value: unknown) => (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) && Number.isFinite(Number(value)) && Number(value) === 0;
     if (!zero(pricing.prompt) || !zero(pricing.completion) || !Object.values(pricing).every(zero)) continue;
     seen.add(item.id);
-    result.push({ id: item.id, name: typeof item.name === 'string' && item.name.trim() ? item.name : item.id, provider: 'openrouter', isFree: true });
+    result.push({ id: item.id, name: typeof item.name === 'string' && item.name.trim() ? item.name : item.id, provider: 'openrouter', isFree: true, supportsTools: Array.isArray(item.supported_parameters) && item.supported_parameters.includes('tools') });
   }
   return result.sort((a, b) => a.id.localeCompare(b.id));
 }

@@ -45,7 +45,7 @@ In Settings, add and reorder fallback provider/model entries. Only enabled provi
 
 ### File tools (not yet enabled)
 
-Desktop Settings can save a list of selected allowed folders (empty by default). This is configuration only: the agent cannot access those folders yet, and full access remains disabled. The existing experimental file tool module is not connected to chat because its path checks are vulnerable to concurrent filesystem changes. Do not expose it until race-resistant confinement, approvals, recycle-bin handling and audit enforcement are implemented and tested on the target OS.
+Desktop Settings can save a list of selected allowed folders (empty by default). This is configuration only: the agent cannot access those folders yet, and full access remains disabled. The existing experimental file tool module is not connected to chat because its path checks are vulnerable to concurrent filesystem changes. Do not expose it until race-resistant confinement, approvals, recycle-bin handling and audit enforcement are implemented and tested on the target OS. An isolated tool protocol in `server/tool-protocol.ts` defines the six tool schemas, provider capability gating, validation, and a 15-call loop, but it does not execute files or connect to chat. To exercise the protocol tests from the repository root, run `npm install` followed by `npx tsx --test tests/tool-protocol.test.ts`. This does not enable or test live file access.
 
 ### Publish a Windows update
 
