@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('folderSettings', {
 });
 
 contextBridge.exposeInMainWorld('islandChat', {
+  onHidden: callback => {
+    const listener = () => callback();
+    ipcRenderer.on('island-chat:hidden', listener);
+    return () => ipcRenderer.removeListener('island-chat:hidden', listener);
+  },
   onCommand: callback => {
     const listener = (_event, command) => callback(command);
     ipcRenderer.on('island-chat:command', listener);
@@ -36,6 +41,7 @@ contextBridge.exposeInMainWorld('islandChat', {
     ipcRenderer.on('island-chat:agent', listener);
     return () => ipcRenderer.removeListener('island-chat:agent', listener);
   },
+  voiceSetting: enabled => ipcRenderer.send('island-chat:voice-setting', enabled),
   activeAgent: agent => ipcRenderer.send('island-chat:active-agent', agent),
   status: status => ipcRenderer.send('island-chat:status', status),
 });

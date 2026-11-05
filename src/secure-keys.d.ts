@@ -34,9 +34,21 @@ interface Window {
 
 interface Window {
   islandChat?: {
+    onHidden(callback: () => void): () => void;
     onCommand(callback: (command: { agent: 'hanex' | 'shumex'; text: string; id: string }) => void): () => void;
     onAgent(callback: (agent: 'hanex' | 'shumex') => void): () => void;
     activeAgent(agent: 'hanex' | 'shumex'): void;
+    voiceSetting(enabled: boolean): void;
     status(status: { phase: 'working' | 'result' | 'error' | 'rejected'; agent: 'hanex' | 'shumex'; text: string; id?: string }): void;
   };
+}
+
+type VoicePhase = 'idle' | 'requesting' | 'recording' | 'transcribing';
+interface Window {
+  MexVoice: { createVoiceRecorder(options: {
+    transcribe(blob: Blob, signal: AbortSignal): Promise<string>;
+    onState(phase: VoicePhase): void;
+    onResult(text: string): void;
+    onError(message: string): void;
+  }): { start(): Promise<void>; stop(): void; dispose(): void; getState(): VoicePhase } };
 }

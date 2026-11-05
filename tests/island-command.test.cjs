@@ -10,9 +10,9 @@ test('island command, draft protection, feedback and microphone fallback', () =>
     return elements[id] ||= { id, value: '', textContent: '', title: '', className: '', listeners: {}, addEventListener(name, callback) { this.listeners[name] = callback; }, blur() { document.activeElement = null; }, focus() { document.activeElement = this; }, setPointerCapture() {} };
   }
   const document = { activeElement: null, getElementById: element, querySelector: () => element('working-label') };
-  const calls = []; let onState, onChat, onAgent, nextTimer = 0; const timers = new Map();
-  const window = { island: {
-    onState(cb) { onState = cb; }, onChat(cb) { onChat = cb; }, onAgent(cb) { onAgent = cb; },
+  const calls = []; let onState, onChat, onAgent, onVoiceSetting, voiceOptions, nextTimer = 0; const timers = new Map();
+  const window = { addEventListener() {}, MexVoice: { createVoiceRecorder(options) { voiceOptions = options; return { getState: () => 'idle', start: async () => options.onError('Microphone recording is not available.'), stop() {}, dispose() {} }; } }, island: {
+    onState(cb) { onState = cb; }, onChat(cb) { onChat = cb; }, onAgent(cb) { onAgent = cb; }, onVoiceSetting(cb) { onVoiceSetting = cb; }, onHidden() {},
     expand() { calls.push(['expand']); }, collapse() { calls.push(['collapse']); }, selectAgent(a) { calls.push(['agent', a]); },
     command(value) { calls.push(['command', value]); }, open() { calls.push(['open']); }, dragStart() { calls.push(['dragStart']); }, dragMove() {}, dragEnd() {}, decision() {}, restartUpdate() {},
   } };
@@ -29,6 +29,13 @@ test('island command, draft protection, feedback and microphone fallback', () =>
   assert.equal(element('result-label').textContent, 'Shumex replied'); assert.equal(element('result-preview').textContent, 'Finished! Done.');
   runTimers(); assert.equal(calls.at(-1)[0], 'collapse');
   onAgent('hanex'); assert.equal(select.value, 'hanex');
-  element('mic').listeners.click(); assert.match(element('result-preview').textContent, /not supported/i);
+  element('mic').listeners.click(); assert.match(element('result-preview').textContent, /not available/i);
+  onVoiceSetting(false); voiceOptions.onResult('voice draft'); assert.equal(input.value, 'voice draft');
+  onVoiceSetting(true); voiceOptions.onResult('send this');
+  const voiceRequest = calls.at(-1)[1]; assert.equal(voiceRequest.text, 'send this'); assert.equal(voiceRequest.agent, 'hanex');
+  onChat({ phase: 'working', agent: 'hanex', id: voiceRequest.id }); assert.equal(input.value, 'voice draft');
+  voiceOptions.onResult('rejected voice');
+  const rejectedRequest = calls.at(-1)[1]; onChat({ phase: 'rejected', agent: 'hanex', id: rejectedRequest.id, text: 'busy' });
+  assert.equal(input.value, 'voice draft rejected voice');
   element('open-chat').listeners.click(); assert.equal(calls.at(-1)[0], 'open');
 });

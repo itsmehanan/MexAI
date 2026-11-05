@@ -81,6 +81,7 @@ export interface AppSettings {
   soundEffects: boolean;
   confettiEffects: boolean;
   speechSynthesis: boolean;
+  sendVoiceImmediately: boolean;
   voiceSpeed: number;
   syncThemeWithAgent: boolean;
   fontSize: 'compact' | 'normal' | 'relaxed';

@@ -64,6 +64,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   soundEffects: true,
   confettiEffects: true,
   speechSynthesis: false,
+  sendVoiceImmediately: false,
   voiceSpeed: 1.0,
   syncThemeWithAgent: true,
   fontSize: 'normal',
@@ -548,6 +549,7 @@ export default function App() {
     return () => { offCommand(); offAgent(); };
   }, []);
   useEffect(() => { window.islandChat?.activeAgent(activeAgentId); }, [activeAgentId]);
+  useEffect(() => { window.islandChat?.voiceSetting(settings.sendVoiceImmediately); }, [settings.sendVoiceImmediately]);
 
   // Stop generation
   const handleStopGeneration = () => {
@@ -773,6 +775,7 @@ export default function App() {
             onSend={handleSendMessage}
             onStop={handleStopGeneration}
             isGenerating={isGenerating}
+            sendVoiceImmediately={settings.sendVoiceImmediately}
             onSelectPrompt={(p) => handleSendMessage(p)}
           />
         </main>

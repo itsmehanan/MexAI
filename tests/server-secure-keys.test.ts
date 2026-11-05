@@ -19,7 +19,9 @@ test('server requests vault keys directly and redacts split streamed responses',
   let scenario = 'normal';
   let catalogCalls = 0;
   let missingKey = false;
+  let audioPayload: any;
   global.fetch = async (_url, init) => {
+    if (String(_url).includes('generativelanguage.googleapis.com') && String(_url).includes('generateContent')) { audioPayload = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: 'Turn on the lights' }] }, finishReason: 'STOP' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
     if (String(_url) === 'https://openrouter.ai/api/v1/models') { catalogCalls++; if (scenario === 'catalog-down') throw new Error('offline'); return new Response(JSON.stringify({data:[{id:'alpha:free',name:'Alpha',pricing:{prompt:'0',completion:'0'}},{id:'paid',pricing:{prompt:'1',completion:'0'}}]}), {status:200}); }
     authorization = (init?.headers as Record<string, string>).Authorization;
     const request = JSON.parse(String(init?.body));
@@ -54,10 +56,23 @@ test('server requests vault keys directly and redacts split streamed responses',
     });
     request.on('error', reject); request.end(data);
   });
+  const postAudio = (type: string, data: Buffer) => new Promise<{status: number; body: any}>((resolve, reject) => {
+    const request = http.request({ host: '127.0.0.1', port: 38769, path: '/api/voice/transcribe', method: 'POST', headers: { 'content-type': type, 'content-length': data.length } }, response => {
+      let text = ''; response.setEncoding('utf8'); response.on('data', part => { text += part; }); response.on('end', () => resolve({status: response.statusCode || 0, body: JSON.parse(text)}));
+    }); request.on('error', reject); request.end(data);
+  });
   const get = (route: string) => new Promise<string>((resolve, reject) => {
     http.get({ host: '127.0.0.1', port: 38769, path: route }, response => { let text = ''; response.setEncoding('utf8'); response.on('data', part => { text += part; }); response.on('end', () => resolve(text)); }).on('error', reject);
   });
   try {
+    const audio = await postAudio('audio/webm;codecs=opus', Buffer.from('fake-audio'));
+    assert.equal(audio.status, 200); assert.equal(audio.body.text, 'Turn on the lights');
+    assert.equal(audioPayload.contents[0].parts[1].inlineData.data, Buffer.from('fake-audio').toString('base64'));
+    assert(!JSON.stringify(audio.body).includes(secret));
+    assert.equal((await postAudio('application/octet-stream', Buffer.from('fake'))).status, 415);
+    missingKey = true;
+    assert.equal((await postAudio('audio/webm', Buffer.from('fake'))).body.error, 'Add a Gemini API key in Settings to transcribe voice.');
+    missingKey = false;
     const firstCatalog = JSON.parse(await get('/api/providers/openrouter/models'));
     assert.deepEqual(firstCatalog.models.map((m: any) => m.id), ['alpha:free']);
     await get('/api/providers/openrouter/models'); assert.equal(catalogCalls, 1);

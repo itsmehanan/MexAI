@@ -4,7 +4,7 @@ const select = document.getElementById('agent-select');
 const preview = document.getElementById('result-preview');
 const label = document.getElementById('result-label');
 const mic = document.getElementById('mic');
-let pointerStart, moved = false, state = 'resting', over = false, collapseTimer, pending, pendingText, pendingTimer, resultAgent, recording = false;
+let pointerStart, moved = false, state = 'resting', over = false, collapseTimer, pending, pendingText, pendingTimer, resultAgent, recording = false, sendVoiceImmediately = false, pendingFromVoice = false, voiceAgent;
 function scheduleCollapse() {
   clearTimeout(collapseTimer);
   collapseTimer = setTimeout(() => {
@@ -18,11 +18,13 @@ window.island.onState(next => {
     if (next === 'result' && !over) scheduleCollapse();
   }
 });
+window.island.onVoiceSetting(enabled => { sendVoiceImmediately = enabled === true; });
 window.island.onAgent(agent => { if (agent === 'hanex' || agent === 'shumex') select.value = agent; });
 window.island.onChat(status => {
   if (!status || !['working', 'result', 'error', 'rejected'].includes(status.phase)) return;
   if (status.id && status.id === pending) {
-    if (status.phase === 'working' && input.value.trim() === pendingText) { input.value = ''; input.blur(); }
+    if (status.phase === 'working' && !pendingFromVoice && input.value.trim() === pendingText) { input.value = ''; input.blur(); }
+    if ((status.phase === 'rejected' || status.phase === 'error') && pendingFromVoice) input.value = [input.value.trim(), pendingText].filter(Boolean).join(' ');
     if (status.phase === 'working' || status.phase === 'rejected' || status.phase === 'error') { clearTimeout(pendingTimer); pending = undefined; }
   }
   if (status.phase === 'working') {
@@ -43,32 +45,60 @@ root.addEventListener('mouseleave', () => { over = false; scheduleCollapse(); })
 input.addEventListener('input', () => { clearTimeout(collapseTimer); if (!over) scheduleCollapse(); });
 input.addEventListener('blur', () => { if (!over) scheduleCollapse(); });
 select.addEventListener('change', () => window.island.selectAgent(select.value));
+function sendCommand(text, agent, fromVoice = false) {
+  if (!text || pending) return false;
+  pending = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  pendingText = text; pendingFromVoice = fromVoice;
+  pendingTimer = setTimeout(() => {
+    if (pendingFromVoice) input.value = [input.value.trim(), pendingText].filter(Boolean).join(' ');
+    pending = undefined; label.textContent = 'Chat did not respond'; preview.textContent = 'Open chat to check before retrying.';
+  }, 10000);
+  window.island.command({ agent, text, id: pending });
+  return true;
+}
 document.getElementById('command-form').addEventListener('submit', event => {
   event.preventDefault();
-  const text = input.value.trim();
-  if (!text || pending) return;
-  pending = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  pendingText = text;
-  pendingTimer = setTimeout(() => { pending = undefined; label.textContent = 'Chat did not respond'; preview.textContent = 'Open chat to check before retrying.'; }, 10000);
-  window.island.command({ agent: select.value, text, id: pending });
+  sendCommand(input.value.trim(), select.value);
 });
 document.getElementById('open-chat').addEventListener('click', () => window.island.open());
 preview.addEventListener('click', () => { if (resultAgent) window.island.selectAgent(resultAgent); window.island.open(); });
 
-// Chromium builds without Web Speech support report that explicitly instead of pretending to record.
-const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-mic.title = 'Dictate a command (speech recognition may use an external service)';
-mic.addEventListener('click', () => {
-  if (!Recognition) { label.textContent = 'Microphone unavailable'; preview.textContent = 'Speech recognition is not supported in this desktop build. Type your command instead.'; return; }
-  if (recording) return;
-  const recognition = new Recognition();
-  recognition.interimResults = false;
-  recognition.onresult = event => { input.value = [input.value.trim(), event.results[0][0].transcript].filter(Boolean).join(' '); input.focus(); };
-  recognition.onerror = () => { label.textContent = 'Microphone unavailable'; preview.textContent = 'Speech recognition failed or microphone access was denied.'; };
-  recognition.onend = () => { recording = false; mic.textContent = '🎙'; if (!over) scheduleCollapse(); };
-  try { recognition.start(); recording = true; mic.textContent = '●'; }
-  catch { label.textContent = 'Microphone unavailable'; preview.textContent = 'Could not start speech recognition.'; }
+// Tap to start and again to stop. Audio is transcribed by Gemini using the saved key.
+const voice = window.MexVoice.createVoiceRecorder({
+  transcribe: async (blob, signal) => {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (signal.aborted) throw new Error('Transcription cancelled.');
+    return window.island.transcribe(bytes, blob.type);
+  },
+  onState: phase => {
+    recording = phase !== 'idle';
+    mic.disabled = phase === 'requesting' || phase === 'transcribing';
+    mic.classList.toggle('voice-listening', phase === 'recording');
+    mic.textContent = phase === 'recording' ? '■' : '🎙';
+    mic.setAttribute('aria-label', phase === 'recording' ? 'Stop recording' : 'Record voice command');
+    if (phase !== 'idle') {
+      label.textContent = phase === 'recording' ? 'Listening… tap the mic to stop' : phase === 'transcribing' ? 'Transcribing with Gemini…' : 'Requesting microphone…';
+      preview.textContent = phase === 'recording' ? '●  ▂ ▅ ▇ ▄ ▆ ▂' : 'Audio is sent to Gemini.';
+    }
+    if (!recording && !over) scheduleCollapse();
+  },
+  onResult: text => {
+    label.textContent = 'Voice command ready'; preview.textContent = 'Transcription complete.';
+    if (!sendVoiceImmediately || !sendCommand(text, voiceAgent, true)) {
+      input.value = [input.value.trim(), text].filter(Boolean).join(' ');
+      input.focus();
+      if (sendVoiceImmediately) preview.textContent = 'Another command is pending; transcript kept in the box.';
+    }
+  },
+  onError: message => { label.textContent = 'Voice input failed'; preview.textContent = message; },
 });
+mic.title = 'Record a command; audio is sent to Gemini for transcription';
+mic.addEventListener('click', () => {
+  if (voice.getState() === 'recording') voice.stop();
+  else if (voice.getState() === 'idle') { voiceAgent = select.value; void voice.start(); }
+});
+window.island.onHidden(() => { if (voice.getState() !== 'idle') { voice.dispose(); recording = false; mic.disabled = false; mic.classList.remove('voice-listening'); mic.textContent = '🎙'; mic.setAttribute('aria-label', 'Record voice command'); label.textContent = 'Voice input stopped'; preview.textContent = 'Recording was stopped when the island was hidden.'; } });
+window.addEventListener('beforeunload', () => voice.dispose());
 
 root.addEventListener('pointerdown', event => {
   if (event.button !== 0 || event.target.closest('button, input, select, .result-preview')) return;

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, KeyboardEvent } from 'react';
-import { Send, Square, Sparkles, CornerDownLeft, Eraser } from 'lucide-react';
+import { Send, Square, Sparkles, Eraser, Mic } from 'lucide-react';
+import '../../electron/voice-recorder.js';
 import { AgentProfile } from '../types';
 
 interface ChatInputProps {
@@ -7,6 +8,7 @@ interface ChatInputProps {
   onSend: (text: string) => void;
   onStop?: () => void;
   isGenerating: boolean;
+  sendVoiceImmediately: boolean;
   onSelectPrompt: (prompt: string) => void;
 }
 
@@ -15,11 +17,48 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onSend,
   onStop,
   isGenerating,
+  sendVoiceImmediately,
   onSelectPrompt,
 }) => {
   const [text, setText] = useState('');
   const [showPromptsMenu, setShowPromptsMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>('idle');
+  const [voiceError, setVoiceError] = useState('');
+  const voiceRef = useRef<ReturnType<typeof window.MexVoice.createVoiceRecorder> | null>(null);
+  const latest = useRef({ onSend, isGenerating, sendVoiceImmediately });
+  latest.current = { onSend, isGenerating, sendVoiceImmediately };
+  useEffect(() => {
+    const voice = window.MexVoice.createVoiceRecorder({
+      transcribe: async (blob, signal) => {
+        const response = await fetch('/api/voice/transcribe', { method: 'POST', headers: { 'Content-Type': blob.type }, body: blob, signal });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || 'Transcription failed.');
+        return body.text;
+      },
+      onState: setVoicePhase,
+      onError: setVoiceError,
+      onResult: transcript => {
+        if (latest.current.sendVoiceImmediately && !latest.current.isGenerating) latest.current.onSend(transcript);
+        else {
+          setText(previous => [previous.trim(), transcript].filter(Boolean).join(' '));
+          if (latest.current.sendVoiceImmediately && latest.current.isGenerating) setVoiceError('A response is in progress; the transcript was kept in the message box.');
+          textareaRef.current?.focus();
+        }
+      },
+    });
+    voiceRef.current = voice;
+    const offHidden = window.islandChat?.onHidden(() => {
+      if (voice.getState() !== 'idle') { voice.dispose(); setVoicePhase('idle'); setVoiceError('Voice input stopped when the chat was hidden.'); }
+    });
+    return () => { offHidden?.(); voice.dispose(); voiceRef.current = null; };
+  }, []);
+  const toggleVoice = () => {
+    setVoiceError('');
+    if (voicePhase === 'recording') voiceRef.current?.stop();
+    else if (voicePhase === 'idle') void voiceRef.current?.start();
+  };
 
   const isHanex = agent.id === 'hanex';
 
@@ -100,9 +139,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       <div className="composer">
         <button type="button" onClick={() => setShowPromptsMenu(prev => !prev)} className="composer-ideas" title="Ideas & Starters" aria-label="Ideas and starters"><Sparkles size={18} /></button>
         <textarea ref={textareaRef} value={text} onChange={e => setText(e.target.value)} onKeyDown={handleKeyDown} placeholder={`Message ${agent.name}...`} rows={1} aria-label={`Message ${agent.name}`} />
+        <button type="button" onClick={toggleVoice} disabled={voicePhase === 'requesting' || voicePhase === 'transcribing'} className={`composer-ideas ${voicePhase === 'recording' ? 'voice-listening' : ''}`} title={voicePhase === 'recording' ? 'Stop recording' : 'Record voice command'} aria-label={voicePhase === 'recording' ? 'Stop recording' : 'Record voice command'} aria-pressed={voicePhase === 'recording'}><Mic size={18} /></button>
         {text.trim() && <button type="button" onClick={() => setText('')} className="composer-clear" title="Clear text" aria-label="Clear text"><Eraser size={16} /></button>}
         {isGenerating ? <button type="button" onClick={onStop} className="composer-send" title="Stop generating"><Square size={15} fill="currentColor" /><span>Stop</span></button> : <button type="button" onClick={handleSubmit} disabled={!text.trim()} className="composer-send" title="Send message (Enter)"><span>Send</span><Send size={16} /></button>}
       </div>
+      {(voicePhase !== 'idle' || voiceError) && <div role="status" className="composer-hint">{voiceError || (voicePhase === 'recording' ? '● Listening… tap the mic to stop' : voicePhase === 'transcribing' ? 'Transcribing with Gemini…' : 'Requesting microphone…')}</div>}
       <div className="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</div>
     </div>
   );

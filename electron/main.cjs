@@ -15,6 +15,7 @@ let quitting = false;
 let failureReported = false;
 let islandState = 'resting';
 let activeIslandAgent = 'hanex';
+let sendVoiceImmediately = false;
 let islandPosition;
 let resizeTimer, saveTimer, dragOrigin, vault, updateController;
 
@@ -78,6 +79,7 @@ function showIsland() {
 }
 function hideMain() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('island-chat:hidden');
   mainWindow.hide();
   showIsland();
 }
@@ -86,7 +88,7 @@ function showMain() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
-  islandWindow?.hide();
+  if (islandWindow && !islandWindow.isDestroyed()) { islandWindow.webContents.send('island:hidden'); islandWindow.hide(); }
 }
 function toggleMain() {
   if (mainWindow?.isVisible() && !mainWindow.isMinimized()) hideMain();
@@ -132,7 +134,7 @@ function setupIsland() {
   });
   islandWindow.setAlwaysOnTop(true, 'floating');
   islandWindow.loadFile(path.join(__dirname, 'island.html'));
-  islandWindow.webContents.on('did-finish-load', () => { islandWindow.webContents.send('island:state', islandState); islandWindow.webContents.send('island:agent', activeIslandAgent); });
+  islandWindow.webContents.on('did-finish-load', () => { islandWindow.webContents.send('island:state', islandState); islandWindow.webContents.send('island:agent', activeIslandAgent); islandWindow.webContents.send('island:voice-setting', sendVoiceImmediately); });
 }
 function validIslandFrame(event) { return validIslandSender(event) && event.senderFrame === islandWindow.webContents.mainFrame; }
 function validIslandSender(event) { return islandWindow && !islandWindow.isDestroyed() && event.sender === islandWindow.webContents; }
@@ -232,6 +234,20 @@ async function startDesktop() {
   })) ipcMain.handle(channel, (event, ...args) => {
     if (!trustedChat(event)) throw new Error('Unauthorized folder settings request.');
     return action(...args);
+  });
+  ipcMain.handle('island:transcribe', async (event, bytes, type) => {
+    if (!validIslandFrame(event)) throw new Error('Unauthorized transcription request.');
+    const mime = typeof type === 'string' ? type.split(';')[0].toLowerCase() : '';
+    if (!['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav'].includes(mime) || !(bytes instanceof Uint8Array) || !bytes.byteLength || bytes.byteLength > 4 * 1024 * 1024) throw new Error('Invalid audio recording.');
+    const response = await fetch(`${APP_URL}/api/voice/transcribe`, { method: 'POST', headers: { 'Content-Type': mime }, body: Buffer.from(bytes), signal: AbortSignal.timeout(65_000) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || typeof result.text !== 'string') throw new Error(typeof result.error === 'string' ? result.error : 'Transcription failed.');
+    return result.text;
+  });
+  ipcMain.on('island-chat:voice-setting', (event, enabled) => {
+    if (!trustedChat(event) || typeof enabled !== 'boolean') return;
+    sendVoiceImmediately = enabled;
+    if (islandWindow && !islandWindow.isDestroyed()) islandWindow.webContents.send('island:voice-setting', enabled);
   });
   ipcMain.on('island-chat:active-agent', (event, agent) => {
     if (!trustedChat(event) || !['hanex', 'shumex'].includes(agent)) return;

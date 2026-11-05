@@ -105,6 +105,34 @@ app.get('/api/status', (_req: Request, res: Response) => {
   });
 });
 
+// Audio is processed in memory and sent only to Gemini; the key never reaches a renderer.
+app.post('/api/voice/transcribe', express.raw({ type: ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav'], limit: '4mb' }), async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const mime = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (!['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav'].includes(mime)) { res.status(415).json({ error: 'Unsupported audio format.' }); return; }
+  if (!Buffer.isBuffer(req.body) || !req.body.length) { res.status(400).json({ error: 'No audio was recorded.' }); return; }
+  let key = '';
+  try {
+    key = await resolveApiKey('gemini');
+    if (!key) { res.status(400).json({ error: 'Add a Gemini API key in Settings to transcribe voice.' }); return; }
+    const ai = new GoogleGenAI({ apiKey: key });
+    const result = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [{ role: 'user', parts: [
+        { text: 'Transcribe the speech in this audio exactly. Return only the transcript, without commentary. If there is no intelligible speech, return an empty response.' },
+        { inlineData: { mimeType: mime, data: req.body.toString('base64') } },
+      ] }],
+      config: { abortSignal: AbortSignal.timeout(60_000) },
+    });
+    const text = redact(result.text?.trim() || '', key);
+    if (!text) { res.status(422).json({ error: 'No speech was detected.' }); return; }
+    res.json({ text: text.slice(0, 10000) });
+  } catch (error) {
+    console.warn('Voice transcription failed.');
+    res.status(502).json({ error: `Gemini transcription failed: ${formatErrorMessage(error, key).slice(0, 300)}` });
+  }
+});
+
 // OpenRouter's public catalog; only verified zero-priced models are returned.
 app.get('/api/providers/openrouter/models', async (req: Request, res: Response) => {
   try { res.json({ models: await getFreeOpenRouterModels(req.query.refresh === '1') }); }
