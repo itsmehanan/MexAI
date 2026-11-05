@@ -24,3 +24,18 @@ contextBridge.exposeInMainWorld('folderSettings', {
   add: () => ipcRenderer.invoke('folders:add'),
   remove: folder => ipcRenderer.invoke('folders:remove', folder),
 });
+
+contextBridge.exposeInMainWorld('islandChat', {
+  onCommand: callback => {
+    const listener = (_event, command) => callback(command);
+    ipcRenderer.on('island-chat:command', listener);
+    return () => ipcRenderer.removeListener('island-chat:command', listener);
+  },
+  onAgent: callback => {
+    const listener = (_event, agent) => callback(agent);
+    ipcRenderer.on('island-chat:agent', listener);
+    return () => ipcRenderer.removeListener('island-chat:agent', listener);
+  },
+  activeAgent: agent => ipcRenderer.send('island-chat:active-agent', agent),
+  status: status => ipcRenderer.send('island-chat:status', status),
+});

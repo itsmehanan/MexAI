@@ -312,14 +312,18 @@ export default function App() {
   };
 
   // Send message handler with multi-provider streaming and fallback retry
-  const handleSendMessage = async (text: string) => {
-    if (!text.trim() || isGenerating) return;
+  const handleSendMessage = async (text: string, targetAgent: AgentId = activeAgentId, islandId?: string) => {
+    if (!text.trim() || isGenerating || abortControllerRef.current) {
+      if (islandId) window.islandChat?.status({ phase: 'rejected', agent: targetAgent, text: 'A response is already in progress.', id: islandId });
+      return;
+    }
+    window.islandChat?.status({ phase: 'working', agent: targetAgent, text: 'Preparing your response…', id: islandId });
 
     if (settings.soundEffects) {
       soundFX.playSend();
     }
 
-    const currentModelConfig = agentModels[activeAgentId] || DEFAULT_AGENT_MODELS[activeAgentId];
+    const currentModelConfig = agentModels[targetAgent] || DEFAULT_AGENT_MODELS[targetAgent];
     const providerConfig = settings.providers[currentModelConfig.provider] || {
       id: currentModelConfig.provider,
       enabled: true,
@@ -331,7 +335,7 @@ export default function App() {
       role: 'user',
       content: text,
       timestamp: Date.now(),
-      agentId: activeAgentId,
+      agentId: targetAgent,
       provider: currentModelConfig.provider,
       model: currentModelConfig.model,
       status: 'complete',
@@ -343,23 +347,23 @@ export default function App() {
       role: 'assistant',
       content: '',
       timestamp: Date.now(),
-      agentId: activeAgentId,
+      agentId: targetAgent,
       provider: currentModelConfig.provider,
       model: currentModelConfig.model,
       status: 'streaming',
     };
 
-    const updatedChat = [...activeMessages, userMessage];
+    const updatedChat = [...(messages[targetAgent] || []), userMessage];
     setMessages((prev) => ({
       ...prev,
-      [activeAgentId]: [...updatedChat, assistantMessage],
+      [targetAgent]: [...updatedChat, assistantMessage],
     }));
 
     setIsGenerating(true);
     abortControllerRef.current = new AbortController();
 
     const requestPayload = {
-      agentId: activeAgentId,
+      agentId: targetAgent,
       provider: currentModelConfig.provider,
       model: currentModelConfig.model,
       messages: updatedChat.map((m) => ({
@@ -409,16 +413,16 @@ export default function App() {
               const data = JSON.parse(jsonStr);
               if (data.reset) {
                 accumulatedText = '';
-                setMessages(prev => ({ ...prev, [activeAgentId]: prev[activeAgentId].map(m => m.id === assistantPlaceholderId ? { ...m, content: '', provider: undefined, model: undefined } : m) }));
+                setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => m.id === assistantPlaceholderId ? { ...m, content: '', provider: undefined, model: undefined } : m) }));
               } else if (data.answeringModel) {
-                setMessages(prev => ({ ...prev, [activeAgentId]: prev[activeAgentId].map(m => m.id === assistantPlaceholderId ? { ...m, provider: data.answeringModel.provider, model: data.answeringModel.model } : m) }));
+                setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => m.id === assistantPlaceholderId ? { ...m, provider: data.answeringModel.provider, model: data.answeringModel.model } : m) }));
               } else if (data.error) {
                 streamError = data.error;
               } else if (data.text) {
                 accumulatedText += data.text;
                 setMessages((prev) => ({
                   ...prev,
-                  [activeAgentId]: prev[activeAgentId].map((m) =>
+                  [targetAgent]: prev[targetAgent].map((m) =>
                     m.id === assistantPlaceholderId
                       ? { ...m, content: accumulatedText, status: 'streaming' }
                       : m
@@ -464,19 +468,21 @@ export default function App() {
           'The model returned an empty response. Try again or switch the model in Settings';
         setMessages((prev) => ({
           ...prev,
-          [activeAgentId]: prev[activeAgentId].map((m) =>
+          [targetAgent]: prev[targetAgent].map((m) =>
             m.id === assistantPlaceholderId
               ? { ...m, content: emptyMsg, status: 'error', error: emptyMsg }
               : m
           ),
         }));
+        window.islandChat?.status({ phase: 'error', agent: targetAgent, text: emptyMsg.slice(0, 1000), id: islandId });
         return;
       }
 
+      window.islandChat?.status({ phase: 'result', agent: targetAgent, text: accumulatedText.slice(0, 1000), id: islandId });
       // Mark complete
       setMessages((prev) => ({
         ...prev,
-        [activeAgentId]: prev[activeAgentId].map((m) =>
+        [targetAgent]: prev[targetAgent].map((m) =>
           m.id === assistantPlaceholderId
             ? { ...m, content: accumulatedText, status: 'complete' }
             : m
@@ -484,17 +490,18 @@ export default function App() {
       }));
 
       if (settings.soundEffects) {
-        soundFX.playReceive(activeAgentId);
+        soundFX.playReceive(targetAgent);
       }
 
       if (settings.speechSynthesis && accumulatedText) {
-        speakText(accumulatedText, activeAgentId, settings.voiceSpeed);
+        speakText(accumulatedText, targetAgent, settings.voiceSpeed);
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
+        window.islandChat?.status({ phase: 'error', agent: targetAgent, text: 'Generation stopped.', id: islandId });
         setMessages((prev) => ({
           ...prev,
-          [activeAgentId]: prev[activeAgentId].map((m) =>
+          [targetAgent]: prev[targetAgent].map((m) =>
             m.id === assistantPlaceholderId
               ? {
                   ...m,
@@ -508,9 +515,10 @@ export default function App() {
         const errorMsg =
           err?.message ||
           `Failed to communicate with ${PROVIDERS_META[currentModelConfig.provider]?.name || 'provider'}. Check your API key in Settings.`;
+        window.islandChat?.status({ phase: 'error', agent: targetAgent, text: errorMsg.slice(0, 1000), id: islandId });
         setMessages((prev) => ({
           ...prev,
-          [activeAgentId]: prev[activeAgentId].map((m) =>
+          [targetAgent]: prev[targetAgent].map((m) =>
             m.id === assistantPlaceholderId
               ? {
                   ...m,
@@ -527,6 +535,19 @@ export default function App() {
       abortControllerRef.current = null;
     }
   };
+
+  const islandCommandRef = useRef(handleSendMessage);
+  islandCommandRef.current = handleSendMessage;
+  useEffect(() => {
+    if (!window.islandChat) return;
+    const offCommand = window.islandChat.onCommand(({ agent, text, id }) => {
+      setActiveAgentId(agent);
+      void islandCommandRef.current(text, agent, id);
+    });
+    const offAgent = window.islandChat.onAgent(agent => setActiveAgentId(agent));
+    return () => { offCommand(); offAgent(); };
+  }, []);
+  useEffect(() => { window.islandChat?.activeAgent(activeAgentId); }, [activeAgentId]);
 
   // Stop generation
   const handleStopGeneration = () => {

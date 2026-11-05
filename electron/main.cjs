@@ -9,11 +9,12 @@ const { setTimeout: delay } = require('node:timers/promises');
 const SERVER_PORT = 3737;
 const SERVER_HOST = '127.0.0.1';
 const APP_URL = `http://${SERVER_HOST}:${SERVER_PORT}`;
-const ISLAND_SIZES = { resting: [132, 40], listening: [260, 44], working: [380, 52], approval: [440, 72], update: [360, 52] };
+const ISLAND_SIZES = { resting: [132, 40], listening: [260, 44], working: [380, 52], approval: [440, 72], update: [360, 52], command: [520, 102], result: [520, 102] };
 let serverProcess, serverExitError, mainWindow, islandWindow, tray;
 let quitting = false;
 let failureReported = false;
 let islandState = 'resting';
+let activeIslandAgent = 'hanex';
 let islandPosition;
 let resizeTimer, saveTimer, dragOrigin, vault, updateController;
 
@@ -93,8 +94,9 @@ function toggleMain() {
 }
 
 function setIslandState(state) {
-  if (updateController?.getState().status === 'ready') state = 'update';
+  if (state === 'resting' && updateController?.getState().status === 'ready') state = 'update';
   if (!Object.hasOwn(ISLAND_SIZES, state) || !islandWindow || islandWindow.isDestroyed()) return;
+  if (islandState === state) return;
   islandState = state;
   islandWindow.webContents.send('island:state', state);
   clearInterval(resizeTimer);
@@ -102,6 +104,8 @@ function setIslandState(state) {
   const [width, height] = ISLAND_SIZES[state];
   // Keep the pill centered on its current location while its native window resizes.
   const centerX = start.x + start.width / 2;
+  const area = screen.getAllDisplays().find(({ workArea: a }) => centerX >= a.x && centerX < a.x + a.width && start.y >= a.y && start.y < a.y + a.height)?.workArea || screen.getPrimaryDisplay().workArea;
+  const targetX = Math.round(Math.max(area.x, Math.min(centerX - width / 2, area.x + area.width - width)));
   const started = Date.now();
   resizeTimer = setInterval(() => {
     if (!islandWindow || islandWindow.isDestroyed()) { clearInterval(resizeTimer); resizeTimer = undefined; return; }
@@ -109,11 +113,11 @@ function setIslandState(state) {
     const eased = 1 - Math.pow(1 - t, 3);
     const w = Math.round(start.width + (width - start.width) * eased);
     const h = Math.round(start.height + (height - start.height) * eased);
-    islandWindow.setBounds({ x: Math.round(centerX - w / 2), y: start.y, width: w, height: h });
+    islandWindow.setBounds({ x: Math.round(start.x + (targetX - start.x) * eased), y: start.y, width: w, height: h });
     if (t === 1) {
       clearInterval(resizeTimer);
       resizeTimer = undefined;
-      islandPosition = { centerX: Math.round(centerX), y: start.y };
+      islandPosition = { centerX: Math.round(targetX + width / 2), y: start.y };
       schedulePositionSave();
     }
   }, 16);
@@ -128,10 +132,29 @@ function setupIsland() {
   });
   islandWindow.setAlwaysOnTop(true, 'floating');
   islandWindow.loadFile(path.join(__dirname, 'island.html'));
-  islandWindow.webContents.on('did-finish-load', () => islandWindow.webContents.send('island:state', islandState));
+  islandWindow.webContents.on('did-finish-load', () => { islandWindow.webContents.send('island:state', islandState); islandWindow.webContents.send('island:agent', activeIslandAgent); });
 }
+function validIslandFrame(event) { return validIslandSender(event) && event.senderFrame === islandWindow.webContents.mainFrame; }
 function validIslandSender(event) { return islandWindow && !islandWindow.isDestroyed() && event.sender === islandWindow.webContents; }
 function setupIslandIpc() {
+  ipcMain.on('island:expand', event => {
+    if (validIslandFrame(event) && ['resting', 'update', 'result', 'command'].includes(islandState)) setIslandState('command');
+  });
+  ipcMain.on('island:collapse', event => {
+    if (validIslandFrame(event) && ['command', 'result'].includes(islandState)) setIslandState('resting');
+  });
+  ipcMain.on('island:agent', (event, agent) => {
+    if (!validIslandFrame(event) || !['hanex', 'shumex'].includes(agent)) return;
+    mainWindow?.webContents.send('island-chat:agent', agent);
+  });
+  ipcMain.on('island:command', (event, payload) => {
+    if (!validIslandFrame(event) || !payload || !['hanex', 'shumex'].includes(payload.agent) || typeof payload.text !== 'string' || !payload.text.trim() || payload.text.length > 10000 || typeof payload.id !== 'string' || payload.id.length > 100) return;
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      islandWindow.webContents.send('island:chat', { phase: 'error', text: 'Chat is not ready.', id: payload.id });
+      return;
+    }
+    mainWindow.webContents.send('island-chat:command', { agent: payload.agent, text: payload.text.trim(), id: payload.id });
+  });
   ipcMain.on('island:restart-update', event => { if (validIslandSender(event) && event.senderFrame === islandWindow.webContents.mainFrame) updateController?.restart(); });
   ipcMain.on('island:open', event => { if (validIslandSender(event)) showMain(); });
   ipcMain.on('island:decision', (event, choice) => {
@@ -210,6 +233,17 @@ async function startDesktop() {
     if (!trustedChat(event)) throw new Error('Unauthorized folder settings request.');
     return action(...args);
   });
+  ipcMain.on('island-chat:active-agent', (event, agent) => {
+    if (!trustedChat(event) || !['hanex', 'shumex'].includes(agent)) return;
+    activeIslandAgent = agent;
+    if (islandWindow && !islandWindow.isDestroyed()) islandWindow.webContents.send('island:agent', agent);
+  });
+  ipcMain.on('island-chat:status', (event, status) => {
+    if (!trustedChat(event) || !status || !['working', 'result', 'error', 'rejected'].includes(status.phase) || !['hanex', 'shumex'].includes(status.agent) || typeof status.text !== 'string' || status.text.length > 1000 || (status.id !== undefined && (typeof status.id !== 'string' || status.id.length > 100))) return;
+    if (!islandWindow || islandWindow.isDestroyed()) return;
+    islandWindow.webContents.send('island:chat', status);
+    if (status.phase !== 'rejected') setIslandState(status.phase === 'working' ? 'working' : 'result');
+  });
   let updater = null;
   if (app.isPackaged && process.platform === 'win32') {
     try { updater = require(path.join(app.getAppPath(), 'dist-electron', 'updater.cjs')).autoUpdater; }
@@ -253,7 +287,7 @@ async function startDesktop() {
   mainWindow = new BrowserWindow({
     title: 'Hanex & Shumex', width: 1280, height: 860, minWidth: 960, minHeight: 640,
     backgroundColor: '#0b0f17', show: false, autoHideMenuBar: true,
-    webPreferences: { preload: path.join(__dirname, 'chat-preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
+    webPreferences: { preload: path.join(__dirname, 'chat-preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false },
   });
   mainWindow.once('ready-to-show', () => mainWindow?.show());
   mainWindow.on('close', event => { if (!quitting) { event.preventDefault(); hideMain(); } });

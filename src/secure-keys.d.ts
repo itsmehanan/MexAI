@@ -31,3 +31,12 @@ interface Window {
     remove(folder: string): Promise<string[]>;
   };
 }
+
+interface Window {
+  islandChat?: {
+    onCommand(callback: (command: { agent: 'hanex' | 'shumex'; text: string; id: string }) => void): () => void;
+    onAgent(callback: (agent: 'hanex' | 'shumex') => void): () => void;
+    activeAgent(agent: 'hanex' | 'shumex'): void;
+    status(status: { phase: 'working' | 'result' | 'error' | 'rejected'; agent: 'hanex' | 'shumex'; text: string; id?: string }): void;
+  };
+}

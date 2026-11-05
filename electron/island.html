@@ -8,10 +8,20 @@
 <link rel="stylesheet" href="island.css">
 </head>
 <body>
-<div id="island" class="island resting" role="button" tabindex="0" aria-label="Open Hanex and Shumex">
+<div id="island" class="island resting" tabindex="0" aria-label="Hanex and Shumex island">
   <div class="faces" aria-hidden="true"><span class="face blue"><i></i><i></i></span><span class="face pink"><i></i><i></i></span></div>
   <div class="state-content listening-content"><span>Listening</span><span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span></div>
   <div class="state-content working-content"><div class="working-label"><span>Working</span><span>Preparing your response…</span></div><div class="progress"><span></span></div></div>
+  <div class="state-content command-content">
+    <div class="command-heading"><span id="result-label">Quick command</span><button id="open-chat" type="button">Open chat ↗</button></div>
+    <div id="result-preview" class="result-preview" aria-live="polite">Ask Hanex or Shumex anything.</div>
+    <form id="command-form" class="command-form">
+      <select id="agent-select" aria-label="Choose agent"><option value="hanex">Hanex</option><option value="shumex">Shumex</option></select>
+      <input id="command-input" aria-label="Command" placeholder="Type a command…" autocomplete="off" maxlength="10000">
+      <button id="mic" type="button" aria-label="Dictate a command" title="Dictate a command">🎙</button>
+      <button type="submit" aria-label="Send command">↵</button>
+    </form>
+  </div>
   <div class="state-content update-content"><span>Update ready. Restart to install</span><button id="restart-update" type="button">Restart</button></div>
   <div class="state-content approval-content"><div><strong>Needs approval</strong><span>Allow this demo action?</span></div><button id="approve" type="button">Approve</button><button id="deny" type="button">Deny</button></div>
 </div>
