@@ -78,6 +78,7 @@ const DEFAULT_AGENT_MODELS: Record<AgentId, AgentModelSelection> = {
 export default function App() {
   // Active Agent state
   const [activeAgentId, setActiveAgentId] = useState<AgentId>('hanex');
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>('idle');
 
   // Per-Agent Model Memory: Hanex and Shumex each remember their chosen model
   const [agentModels, setAgentModels] = useState<Record<AgentId, AgentModelSelection>>(() => {
@@ -664,6 +665,9 @@ export default function App() {
     setIsSettingsOpen(false);
   };
 
+  const streamingMessage = [...activeMessages].reverse().find(message => message.status === 'streaming');
+  const activeCharacterStatus = voicePhase === 'recording' || voicePhase === 'requesting' ? 'listening' : voicePhase === 'transcribing' ? 'typing' : isGenerating && streamingMessage ? (streamingMessage.content.trim() ? 'working' : 'typing') : 'online';
+
   const currentProviderConfig = settings.providers[activeModelSelection.provider];
   const isCurrentProviderKeyMissing =
     activeModelSelection.provider !== 'ollama' &&
@@ -697,12 +701,12 @@ export default function App() {
       {/* Main Desktop Container: Sidebar + Chat Area */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
-        <Sidebar activeAgentId={activeAgentId} onSelectAgent={handleSelectAgent} providers={settings.providers} isGenerating={isGenerating} />
+        <Sidebar activeAgentId={activeAgentId} onSelectAgent={handleSelectAgent} providers={settings.providers} activeStatus={activeCharacterStatus} />
 
         {/* Chat Main Area */}
         <main className="chat-main">
           <div className="chat-heading">
-            <div className="chat-heading-title"><Avatar agentId={activeAgentId} size="md" status={isGenerating ? 'typing' : 'online'} /><div><span className="eyebrow">YOUR CONVERSATION</span><h1>Chat with {activeAgent.name} <span className="heading-dot">✳</span></h1><p>{isHanex ? 'A little clarity, whenever you need it.' : 'A little inspiration, whenever you need it.'}</p></div></div>
+            <div className="chat-heading-title"><Avatar agentId={activeAgentId} size="md" status={activeCharacterStatus} /><div><span className="eyebrow">YOUR CONVERSATION</span><h1>Chat with {activeAgent.name} <span className="heading-dot">✳</span></h1><p>{isHanex ? 'A little clarity, whenever you need it.' : 'A little inspiration, whenever you need it.'}</p></div></div>
             <div className="heading-actions">
               <button onClick={() => { const prompt = activeAgent.suggestedPrompts[Math.floor(Math.random() * activeAgent.suggestedPrompts.length)]; handleSendMessage(prompt.prompt); }} disabled={isGenerating} title="Send a random prompt starter" aria-label="Send a random prompt starter"><Sparkles size={17} /></button>
               <button onClick={() => handleExportChat(activeAgentId)} title="Export chat history" aria-label="Export chat history"><Download size={17} /></button>
@@ -776,6 +780,7 @@ export default function App() {
             onStop={handleStopGeneration}
             isGenerating={isGenerating}
             sendVoiceImmediately={settings.sendVoiceImmediately}
+            onVoicePhaseChange={setVoicePhase}
             onSelectPrompt={(p) => handleSendMessage(p)}
           />
         </main>

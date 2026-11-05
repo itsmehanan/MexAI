@@ -5,11 +5,15 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hanex &amp; Shumex island</title>
+<link rel="stylesheet" href="characters.css">
 <link rel="stylesheet" href="island.css">
 </head>
 <body>
 <div id="island" class="island resting" tabindex="0" aria-label="Hanex and Shumex island">
-  <div class="faces" aria-hidden="true"><span class="face blue"><i></i><i></i></span><span class="face pink"><i></i><i></i></span></div>
+  <div class="faces" data-expression="sleeping" aria-hidden="true">
+    <span class="character character--hanex"><span class="character-detail"></span><span class="character-body"><span class="character-eyes"><i class="character-eye"></i><i class="character-eye"></i></span><span class="character-cheek character-cheek--left"></span><span class="character-cheek character-cheek--right"></span><span class="character-mouth"></span></span><span class="character-thoughts"><i></i><i></i><i></i></span></span>
+    <span class="character character--shumex"><span class="character-detail"></span><span class="character-body"><span class="character-eyes"><i class="character-eye"></i><i class="character-eye"></i></span><span class="character-cheek character-cheek--left"></span><span class="character-cheek character-cheek--right"></span><span class="character-mouth"></span></span><span class="character-thoughts"><i></i><i></i><i></i></span></span>
+  </div>
   <div class="state-content listening-content"><span>Listening</span><span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span></div>
   <div class="state-content working-content"><div class="working-label"><span>Working</span><span>Preparing your response…</span></div><div class="progress"><span></span></div></div>
   <div class="state-content command-content">

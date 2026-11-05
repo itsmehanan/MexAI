@@ -94,7 +94,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
           agentId={agent.id}
           size="md"
           showStatus={true}
-          status={isSpeaking ? 'speaking' : message.status === 'streaming' ? 'typing' : 'online'}
+          status={isSpeaking ? 'speaking' : message.status === 'streaming' ? (message.content.trim() ? 'working' : 'typing') : 'online'}
           className="mt-1"
         />
 

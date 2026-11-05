@@ -7,10 +7,10 @@ interface SidebarProps {
   activeAgentId: AgentId;
   onSelectAgent: (id: AgentId) => void;
   providers: Record<ProviderId, ProviderSettings>;
-  isGenerating: boolean;
+  activeStatus: 'online' | 'typing' | 'working' | 'listening';
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ activeAgentId, onSelectAgent, providers, isGenerating }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ activeAgentId, onSelectAgent, providers, activeStatus }) => {
   const enabledCount = Object.values(providers).filter(p => p.enabled).length;
   return (
     <aside className="app-sidebar">
@@ -19,7 +19,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeAgentId, onSelectAgent, 
       <nav className="agent-list" aria-label="Choose a companion">
         {(['hanex', 'shumex'] as AgentId[]).map(id => (
           <button key={id} onClick={() => onSelectAgent(id)} className={`agent-button ${activeAgentId === id ? 'selected' : ''}`} aria-current={activeAgentId === id ? 'true' : undefined} title={AGENTS[id].name}>
-            <Avatar agentId={id} size="md" status={activeAgentId === id && isGenerating ? 'typing' : 'online'} />
+            <Avatar agentId={id} size="md" status={activeAgentId === id ? activeStatus : 'online'} />
             <span className="sidebar-copy agent-copy"><strong>{AGENTS[id].name}</strong><small>{id === 'hanex' ? 'Thoughtful & practical' : 'Warm & creative'}</small></span>
             {activeAgentId === id && <span className="selected-dot" />}
           </button>

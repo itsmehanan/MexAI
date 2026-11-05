@@ -9,6 +9,7 @@ interface ChatInputProps {
   onStop?: () => void;
   isGenerating: boolean;
   sendVoiceImmediately: boolean;
+  onVoicePhaseChange?: (phase: VoicePhase) => void;
   onSelectPrompt: (prompt: string) => void;
 }
 
@@ -18,6 +19,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onStop,
   isGenerating,
   sendVoiceImmediately,
+  onVoicePhaseChange,
   onSelectPrompt,
 }) => {
   const [text, setText] = useState('');
@@ -27,8 +29,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [voicePhase, setVoicePhase] = useState<VoicePhase>('idle');
   const [voiceError, setVoiceError] = useState('');
   const voiceRef = useRef<ReturnType<typeof window.MexVoice.createVoiceRecorder> | null>(null);
-  const latest = useRef({ onSend, isGenerating, sendVoiceImmediately });
-  latest.current = { onSend, isGenerating, sendVoiceImmediately };
+  const latest = useRef({ onSend, isGenerating, sendVoiceImmediately, onVoicePhaseChange });
+  latest.current = { onSend, isGenerating, sendVoiceImmediately, onVoicePhaseChange };
   useEffect(() => {
     const voice = window.MexVoice.createVoiceRecorder({
       transcribe: async (blob, signal) => {
@@ -37,7 +39,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         if (!response.ok) throw new Error(body.error || 'Transcription failed.');
         return body.text;
       },
-      onState: setVoicePhase,
+      onState: phase => { setVoicePhase(phase); latest.current.onVoicePhaseChange?.(phase); },
       onError: setVoiceError,
       onResult: transcript => {
         if (latest.current.sendVoiceImmediately && !latest.current.isGenerating) latest.current.onSend(transcript);
@@ -50,7 +52,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     });
     voiceRef.current = voice;
     const offHidden = window.islandChat?.onHidden(() => {
-      if (voice.getState() !== 'idle') { voice.dispose(); setVoicePhase('idle'); setVoiceError('Voice input stopped when the chat was hidden.'); }
+      if (voice.getState() !== 'idle') { voice.dispose(); setVoicePhase('idle'); latest.current.onVoicePhaseChange?.('idle'); setVoiceError('Voice input stopped when the chat was hidden.'); }
     });
     return () => { offHidden?.(); voice.dispose(); voiceRef.current = null; };
   }, []);

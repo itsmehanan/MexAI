@@ -4,10 +4,7 @@ html, body { margin:0; width:100%; height:100%; overflow:hidden; background:tran
 .island:focus-visible { outline:2px solid #B5DEFF; outline-offset:-3px; }
 .faces { display:flex; align-items:center; gap:7px; flex-shrink:0; }
 .resting .faces { margin:auto; }
-.face { width:20px; height:20px; border-radius:50%; display:flex; justify-content:center; align-items:center; gap:3px; }
-.face i { width:2px; height:3px; border-radius:50%; background:#0A1020; }
-.face.blue { background:radial-gradient(circle at 35% 30%,#B5DEFF,#4AA8F5); box-shadow:0 0 12px rgba(90,180,255,.45); }
-.face.pink { background:radial-gradient(circle at 35% 30%,#FFC2DE,#F0609F); box-shadow:0 0 12px rgba(255,126,182,.45); }.face.pink i { background:#2A0F20; }
+.faces .character { width:26px; height:26px; }
 .state-content { display:none; min-width:0; flex:1; animation:appear .22s ease both; }
 .listening .listening-content { display:flex; align-items:center; justify-content:space-between; font-size:12px; font-weight:600; }
 .wave { display:flex; align-items:center; gap:3px; height:22px; }.wave i { width:3px; height:6px; border-radius:2px; background:#B5DEFF; animation:wave 1s ease-in-out infinite alternate; }.wave i:nth-child(2),.wave i:nth-child(4) { animation-delay:.2s; }.wave i:nth-child(3) { animation-delay:.4s; }

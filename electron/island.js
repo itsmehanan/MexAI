@@ -1,10 +1,18 @@
 const root = document.getElementById('island');
+const faces = document.querySelector('.faces');
 const input = document.getElementById('command-input');
 const select = document.getElementById('agent-select');
 const preview = document.getElementById('result-preview');
 const label = document.getElementById('result-label');
 const mic = document.getElementById('mic');
-let pointerStart, moved = false, state = 'resting', over = false, collapseTimer, pending, pendingText, pendingTimer, resultAgent, recording = false, sendVoiceImmediately = false, pendingFromVoice = false, voiceAgent;
+let pointerStart, moved = false, state = 'resting', over = false, collapseTimer, pending, pendingText, pendingTimer, resultAgent, recording = false, voicePhase = 'idle', sendVoiceImmediately = false, pendingFromVoice = false, voiceAgent;
+function updateExpression() {
+  const expression = voicePhase === 'recording' || voicePhase === 'requesting' ? 'listening'
+    : voicePhase === 'transcribing' ? 'thinking'
+    : state === 'resting' ? 'sleeping' : state === 'listening' ? 'listening'
+    : state === 'working' ? 'working' : state === 'approval' ? 'thinking' : 'happy';
+  faces.dataset.expression = expression;
+}
 function scheduleCollapse() {
   clearTimeout(collapseTimer);
   collapseTimer = setTimeout(() => {
@@ -15,6 +23,7 @@ window.island.onState(next => {
   if (['resting', 'listening', 'working', 'approval', 'update', 'command', 'result'].includes(next)) {
     state = next;
     root.className = `island ${next}`;
+    updateExpression();
     if (next === 'result' && !over) scheduleCollapse();
   }
 });
@@ -71,7 +80,9 @@ const voice = window.MexVoice.createVoiceRecorder({
     return window.island.transcribe(bytes, blob.type);
   },
   onState: phase => {
+    voicePhase = phase;
     recording = phase !== 'idle';
+    updateExpression();
     mic.disabled = phase === 'requesting' || phase === 'transcribing';
     mic.classList.toggle('voice-listening', phase === 'recording');
     mic.textContent = phase === 'recording' ? '■' : '🎙';
@@ -97,7 +108,7 @@ mic.addEventListener('click', () => {
   if (voice.getState() === 'recording') voice.stop();
   else if (voice.getState() === 'idle') { voiceAgent = select.value; void voice.start(); }
 });
-window.island.onHidden(() => { if (voice.getState() !== 'idle') { voice.dispose(); recording = false; mic.disabled = false; mic.classList.remove('voice-listening'); mic.textContent = '🎙'; mic.setAttribute('aria-label', 'Record voice command'); label.textContent = 'Voice input stopped'; preview.textContent = 'Recording was stopped when the island was hidden.'; } });
+window.island.onHidden(() => { if (voice.getState() !== 'idle') { voice.dispose(); voicePhase = 'idle'; recording = false; updateExpression(); mic.disabled = false; mic.classList.remove('voice-listening'); mic.textContent = '🎙'; mic.setAttribute('aria-label', 'Record voice command'); label.textContent = 'Voice input stopped'; preview.textContent = 'Recording was stopped when the island was hidden.'; } });
 window.addEventListener('beforeunload', () => voice.dispose());
 
 root.addEventListener('pointerdown', event => {
