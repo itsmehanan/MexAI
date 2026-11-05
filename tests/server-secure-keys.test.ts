@@ -10,8 +10,9 @@ test('server requests vault keys directly and redacts split streamed responses',
   process.env.MEXAI_HOST = '127.0.0.1';
   process.env.MEXAI_PORT = '38769';
   process.env.NODE_ENV = 'production';
+  let toolFolders: string[] = [];
   const port = new EventEmitter() as EventEmitter & { postMessage: (data: any) => void };
-  port.postMessage = data => { queueMicrotask(() => port.emit('message', { data: { type: 'secure-key-response', id: data.id, key: data.type === 'secure-endpoint-request' ? 'https://trusted.example/v1' : (missingKey ? '' : secret) } })); };
+  port.postMessage = data => { if (data.type === 'tool-request') { queueMicrotask(() => port.emit('message', {data: {type:'tool-response', id:data.id, value:data.action === 'list' ? toolFolders : { status: 'completed', result: { content: 'hello' } }}})); return; } queueMicrotask(() => port.emit('message', { data: { type: 'secure-key-response', id: data.id, key: data.type === 'secure-endpoint-request' ? 'https://trusted.example/v1' : (missingKey ? '' : secret) } })); };
   (process as any).parentPort = port;
   const originalFetch = global.fetch;
   let authorization = '';
@@ -20,7 +21,13 @@ test('server requests vault keys directly and redacts split streamed responses',
   let catalogCalls = 0;
   let missingKey = false;
   let audioPayload: any;
+  let geminiToolRound = 0;
   global.fetch = async (_url, init) => {
+    if (scenario === 'gemini-tools' && String(_url).includes('generativelanguage.googleapis.com') && String(_url).includes('generateContent')) {
+      geminiToolRound++;
+      const parts = geminiToolRound === 1 ? [{functionCall:{name:'read_file', args:{folder:'C:\\Allowed',path:'hello.txt'}}}] : [{text:'Read successfully.'}];
+      return new Response(JSON.stringify({candidates:[{content:{role:'model',parts},finishReason:'STOP'}]}), {status:200,headers:{'Content-Type':'application/json'}});
+    }
     if (String(_url).includes('generativelanguage.googleapis.com') && String(_url).includes('generateContent')) { audioPayload = JSON.parse(String(init?.body)); return new Response(JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: 'Turn on the lights' }] }, finishReason: 'STOP' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
     if (String(_url) === 'https://openrouter.ai/api/v1/models') { catalogCalls++; if (scenario === 'catalog-down') throw new Error('offline'); return new Response(JSON.stringify({data:[{id:'alpha:free',name:'Alpha',pricing:{prompt:'0',completion:'0'}},{id:'paid',pricing:{prompt:'1',completion:'0'}}]}), {status:200}); }
     authorization = (init?.headers as Record<string, string>).Authorization;
@@ -77,6 +84,10 @@ test('server requests vault keys directly and redacts split streamed responses',
     assert.deepEqual(firstCatalog.models.map((m: any) => m.id), ['alpha:free']);
     await get('/api/providers/openrouter/models'); assert.equal(catalogCalls, 1);
     await get('/api/providers/openrouter/models?refresh=1'); assert.equal(catalogCalls, 2);
+    toolFolders = ['C:\\Allowed']; scenario = 'gemini-tools';
+    const toolStream = await post('/api/chat/stream', { provider: 'gemini', model: 'gemini-test', messages: [{role:'user',content:'Read hello.txt'}] });
+    assert(toolStream.includes('\"toolCard\"')); assert(toolStream.includes('\"status\":\"completed\"')); assert(toolStream.includes('Read successfully.'));
+    toolFolders = []; scenario = 'normal';
     const result = await post('/api/providers/test', { provider: 'openai' });
     assert.equal(authorization, `Bearer ${secret}`);
     assert(!result.includes(secret));

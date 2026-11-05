@@ -4,7 +4,8 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import type { Server } from 'http';
 import { randomUUID } from 'node:crypto';
-import { getFreeOpenRouterModels } from './server/openrouter';
+import { getFreeOpenRouterModels, openRouterSupportsTools } from './server/openrouter';
+import { runToolModel } from './server/model-tools';
 import { AGENT_SYSTEM_PROMPTS } from './server/prompts';
 import { GoogleGenAI } from '@google/genai';
 
@@ -24,6 +25,12 @@ app.use(express.json({ limit: '10mb' }));
 export type ProviderType = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'custom';
 
 function redact(value: string, secret?: string): string { return secret ? value.split(secret).join('[redacted]') : value; }
+function redactValue(value: unknown, secret: string): unknown {
+  if (typeof value === 'string') return redact(value, secret);
+  if (Array.isArray(value)) return value.map(item => redactValue(item, secret));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactValue(item, secret)]));
+  return value;
+}
 
 function formatErrorMessage(err: any, secret?: string): string {
   if (!err) return 'Unknown error occurred.';
@@ -43,10 +50,29 @@ function formatErrorMessage(err: any, secret?: string): string {
 }
 
 const keyPort = (process as any).parentPort;
+const pendingTools = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+async function desktopTool(action: string, call?: unknown, signal?: AbortSignal): Promise<any> {
+  if (!keyPort || process.env.MEXAI_SECURE_KEYS !== '1') throw new Error('Desktop tool service is unavailable.');
+  const id = randomUUID();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('Tool request cancelled.')); return; }
+    const cancel = () => { keyPort.postMessage({ type:'tool-cancel', id }); pendingTools.delete(id); clearTimeout(timer); reject(new Error('Tool request cancelled.')); };
+    const timer = setTimeout(() => { keyPort.postMessage({ type:'tool-cancel', id }); pendingTools.delete(id); signal?.removeEventListener('abort', cancel); reject(new Error('Tool service timed out.')); }, 180_000);
+    signal?.addEventListener('abort', cancel, { once:true });
+    pendingTools.set(id, { resolve: value => { signal?.removeEventListener('abort', cancel); resolve(value); }, reject: error => { signal?.removeEventListener('abort', cancel); reject(error); }, timer });
+    keyPort.postMessage({ type: 'tool-request', id, action, call });
+  });
+}
 const pendingKeys = new Map<string, { resolve: (key: string) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 if (process.env.MEXAI_SECURE_KEYS === '1' && keyPort) {
   keyPort.on('message', (event: any) => {
     const message = event.data;
+    if (message?.type === 'tool-response') {
+      const pending = pendingTools.get(message.id); if (!pending) return;
+      pendingTools.delete(message.id); clearTimeout(pending.timer);
+      if (message.error) pending.reject(new Error(message.error)); else pending.resolve(message.value);
+      return;
+    }
     if (message?.type !== 'secure-key-response') return;
     const pending = pendingKeys.get(message.id);
     if (!pending) return;
@@ -746,6 +772,11 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
   let catalogError = false;
   let addedFree = false;
   let stoppedForKey = false;
+  let performedTool = false;
+  let allowedFolders: string[] = [];
+  if (process.env.MEXAI_SECURE_KEYS === '1' && keyPort) {
+    try { const result = await desktopTool('list'); if (Array.isArray(result)) allowedFolders = result.filter(item => typeof item === 'string'); } catch { /* tools unavailable; ordinary chat still works */ }
+  }
   const retried = new Set<string>();
   for (let index = 0; index < candidates.length && !disconnect.signal.aborted; index++) {
     const candidate = candidates[index];
@@ -762,6 +793,21 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
       }
       let pending = '';
       const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(120_000)]);
+      let toolCapable = candidate.provider === 'gemini';
+      if (allowedFolders.length && candidate.provider === 'openrouter') {
+        try { toolCapable = await openRouterSupportsTools(candidate.model); } catch { toolCapable = false; }
+      }
+      if (allowedFolders.length && toolCapable && (candidate.provider === 'gemini' || candidate.provider === 'openrouter')) {
+        send({ answeringModel: { provider: candidate.provider, model: candidate.model } });
+        const text = await runToolModel({ provider:candidate.provider, model:candidate.model, key, messages:messages || [], system:systemInstruction, folders:allowedFolders, signal,
+          onCard: card => { performedTool = true; send({ toolCard: redactValue(card, key) }); },
+          execute: async (call, signal) => desktopTool('execute', call, signal),
+          onRejected: async (call, reason) => { await desktopTool('rejected', { name: call.name, reason }, signal); },
+        });
+        if (disconnect.signal.aborted) break;
+        if (!text.trim()) throw new Error('Empty response.');
+        send({ text: redact(text, key) }); send({ done:true }); res.end(); return;
+      }
       const stream = streamProvider(candidate.provider, candidate.model, messages || [], systemInstruction, candidate.providerConfig, key, signal);
       for await (const chunk of stream) {
         if (disconnect.signal.aborted) break;
@@ -800,7 +846,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
         continue;
       }
     }
-    if (stoppedForKey) break;
+    if (stoppedForKey || performedTool) break;
     if (candidate.provider === 'openrouter' && !addedFree) {
       try {
         freeModels ||= await getFreeOpenRouterModels(true);

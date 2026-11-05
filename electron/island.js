@@ -5,7 +5,7 @@ const select = document.getElementById('agent-select');
 const preview = document.getElementById('result-preview');
 const label = document.getElementById('result-label');
 const mic = document.getElementById('mic');
-let pointerStart, moved = false, state = 'resting', over = false, collapseTimer, pending, pendingText, pendingTimer, resultAgent, recording = false, voicePhase = 'idle', sendVoiceImmediately = false, pendingFromVoice = false, voiceAgent;
+let pointerStart, moved = false, state = 'resting', over = false, collapseTimer, pending, pendingText, pendingTimer, resultAgent, approvalRequest, recording = false, voicePhase = 'idle', sendVoiceImmediately = false, pendingFromVoice = false, voiceAgent;
 function updateExpression() {
   const expression = voicePhase === 'recording' || voicePhase === 'requesting' ? 'listening'
     : voicePhase === 'transcribing' ? 'thinking'
@@ -26,6 +26,12 @@ window.island.onState(next => {
     updateExpression();
     if (next === 'result' && !over) scheduleCollapse();
   }
+});
+window.island.onApproval(request => {
+  approvalRequest = request;
+  document.getElementById('approval-title').textContent = request ? `Needs approval: ${request.name}` : 'Needs approval';
+  document.getElementById('approval-details').textContent = request ? JSON.stringify({ action:request.name === 'delete_file' ? 'Move file to Recycle Bin' : request.name === 'move_file' ? 'Move file' : request.overwrite ? 'Replace file with this content' : 'Create file with this content', source:request.source, ...(request.destination ? {destination:request.destination} : {}), overwrite:request.overwrite, ...request.arguments }, null, 2) : 'Allow this demo action?';
+  document.getElementById('always').style.display = request ? '' : 'none';
 });
 window.island.onVoiceSetting(enabled => { sendVoiceImmediately = enabled === true; });
 window.island.onAgent(agent => { if (agent === 'hanex' || agent === 'shumex') select.value = agent; });
@@ -112,7 +118,7 @@ window.island.onHidden(() => { if (voice.getState() !== 'idle') { voice.dispose(
 window.addEventListener('beforeunload', () => voice.dispose());
 
 root.addEventListener('pointerdown', event => {
-  if (event.button !== 0 || event.target.closest('button, input, select, .result-preview')) return;
+  if (event.button !== 0 || event.target.closest('button, input, select, pre, .result-preview')) return;
   pointerStart = { x: event.screenX, y: event.screenY };
   moved = false;
   root.setPointerCapture(event.pointerId);
@@ -131,6 +137,9 @@ root.addEventListener('pointerup', () => {
 });
 root.addEventListener('pointercancel', () => { if (pointerStart) window.island.dragEnd(); pointerStart = undefined; });
 root.addEventListener('keydown', event => { if (event.target === root && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); window.island.open(); } });
-document.getElementById('approve').addEventListener('click', () => window.island.decision('approve'));
-document.getElementById('deny').addEventListener('click', () => window.island.decision('deny'));
+document.getElementById('approve').addEventListener('click', () => window.island.decision('approve', approvalRequest?.id));
+document.getElementById('deny').addEventListener('click', () => window.island.decision('deny', approvalRequest?.id));
 document.getElementById('restart-update').addEventListener('click', () => window.island.restartUpdate());
+
+document.getElementById('always').addEventListener('click', () => { if (approvalRequest) window.island.decision('always', approvalRequest.id); });
+document.getElementById('approval-open').addEventListener('click', () => window.island.open());

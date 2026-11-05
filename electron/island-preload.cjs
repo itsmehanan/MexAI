@@ -1,5 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('island', {
+  onApproval: callback => ipcRenderer.on('island:approval', (_event, request) => callback(request)),
   onHidden: callback => ipcRenderer.on('island:hidden', () => callback()),
   onState: callback => ipcRenderer.on('island:state', (_event, state) => callback(state)),
   onChat: callback => ipcRenderer.on('island:chat', (_event, status) => callback(status)),
@@ -12,7 +13,7 @@ contextBridge.exposeInMainWorld('island', {
   command: payload => ipcRenderer.send('island:command', payload),
   open: () => ipcRenderer.send('island:open'),
   restartUpdate: () => ipcRenderer.send('island:restart-update'),
-  decision: choice => ipcRenderer.send('island:decision', choice),
+  decision: (choice, id) => ipcRenderer.send('island:decision', choice, id),
   dragStart: () => ipcRenderer.send('island:drag-start'),
   dragMove: () => ipcRenderer.send('island:drag-move'),
   dragEnd: () => ipcRenderer.send('island:drag-end'),

@@ -513,14 +513,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="space-y-4">
                 <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/5 space-y-3">
                   <h4 className="text-sm font-semibold text-white">Allowed folders</h4>
-                  <p className="text-xs text-amber-300">File tools are not enabled yet. Selected folders do not grant the agent access until the secure tool system is complete.</p>
+                  <p className="text-xs text-amber-300">The agent can read, list and search in selected folders. File changes require approval unless you choose to always allow them.</p>
                   {!window.folderSettings ? <p className="text-xs text-slate-400">Folder selection is available in the desktop app only.</p> : <>
                     {allowedFolders.length === 0 && <p className="text-xs text-slate-400">No folders selected.</p>}
                     {allowedFolders.map(folder => <div key={folder} className="flex items-center gap-2"><span className="text-xs text-slate-300 break-all flex-1">{folder}</span><button type="button" disabled={folderBusy} onClick={() => editFolders(folder)} aria-label={`Remove ${folder}`} className="text-xs text-rose-300 disabled:opacity-50">Remove</button></div>)}
                     <button type="button" disabled={folderBusy} onClick={() => editFolders()} className="px-3 py-2 rounded-lg bg-white/10 text-xs text-white disabled:opacity-50">Choose folder</button>
                     {folderError && <p role="alert" className="text-xs text-rose-300">{folderError}</p>}
                   </>}
-                  <div className="flex justify-between items-center"><div><h4 className="text-sm font-semibold text-white">Full access</h4><p className="text-xs text-slate-400">Off — unavailable while file tools are disabled.</p></div><button type="button" role="switch" aria-label="Full access" aria-checked={false} disabled className="w-11 h-6 rounded-full bg-slate-700 opacity-50 relative"><span className="absolute top-1 left-1 w-4 h-4 rounded-full bg-white" /></button></div>
+                  <div className="flex justify-between items-center"><div><h4 className="text-sm font-semibold text-white">Full access</h4><p className="text-xs text-slate-400">Off — access is limited to selected folders.</p></div><button type="button" role="switch" aria-label="Full access" aria-checked={false} disabled className="w-11 h-6 rounded-full bg-slate-700 opacity-50 relative"><span className="absolute top-1 left-1 w-4 h-4 rounded-full bg-white" /></button></div>
                 </div>
                 <div className="flex items-center justify-between gap-4 p-3.5 rounded-2xl bg-white/[0.03] border border-white/5">
                   <div><h4 className="text-sm font-semibold text-white">App updates</h4>

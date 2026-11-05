@@ -58,3 +58,23 @@ test('unoffered, duplicate and cancelled tool calls cannot run', async () => {
   const abort = new AbortController(); abort.abort();
   await assert.rejects(runToolLoop({ ...base, signal: abort.signal, next: async () => ({ text: 'no' }) }), /cancelled/);
 });
+
+
+test('excess calls in a single model response are shown as failed without execution', async () => {
+  const cards: any[] = []; let count = 0;
+  const result = await runToolLoop({ provider:'gemini', allowedFolders:folders, signal:new AbortController().signal,
+    next:async () => ({ calls:Array.from({length:17},(_,i)=>read(String(i))) }),
+    execute:async () => { count++; return {status:'completed'}; }, onCard: card => cards.push(card),
+  });
+  assert.equal(count,15); assert.equal(result.limitReached,true);
+  assert.equal(cards.filter(c=>c.status==='failed').length,2);
+});
+
+test('invalid model calls are recorded as failed without reaching the executor', async () => {
+  let round = 0, executed = false; const rejected: string[] = [], cards: any[] = [];
+  const output = await runToolLoop({ provider:'gemini', allowedFolders:folders, signal:new AbortController().signal,
+    next:async () => round++ === 0 ? {calls:[{id:'bad',name:'read_file',arguments:{folder:folders[0],path:'../secret'}}]} : {text:'Cannot access that path.'},
+    execute:async () => { executed=true; return {status:'completed'}; }, onCard:card=>cards.push(card), onRejected:async (_call, reason)=>{rejected.push(reason);},
+  });
+  assert.equal(executed,false); assert.equal(cards.at(-1).status,'failed'); assert.equal(rejected.length,1); assert.equal(output.text,'Cannot access that path.');
+});

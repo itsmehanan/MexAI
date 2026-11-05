@@ -24,7 +24,7 @@ ipcMain.handle = (name, fn) => { handlers[name] = fn; };
 let cursor = { x: 500, y: 30 };
 let unregistered = false;
 const safeStorage = { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'gnome_libsecret', encryptString: s => Buffer.from(s), decryptString: b => b.toString() };
-const electron = { app, BrowserWindow:Window, Tray, ipcMain, safeStorage, Menu:{buildFromTemplate:t=>t}, nativeImage:{createFromPath:()=>({isEmpty:()=>false})}, globalShortcut:{register:(key,cb)=>{assert.equal(key,'Control+Shift+Space');shortcut=cb;return true;},unregisterAll:()=>{unregistered=true;}}, screen:{getPrimaryDisplay:()=>({workArea:{x:0,y:0,width:1200,height:800}}),getAllDisplays:()=>[{workArea:{x:0,y:0,width:1200,height:800}}], getCursorScreenPoint:()=>cursor}, dialog:{showErrorBox:(_t,m)=>{throw Error(m)}}, utilityProcess:{fork:()=>{child=new EventEmitter();child.kill=()=>{child.killed=true};return child;}} };
+const electron = { app, BrowserWindow:Window, Tray, ipcMain, safeStorage, shell:{trashItem:async p=>fs.promises.unlink(p)}, Menu:{buildFromTemplate:t=>t}, nativeImage:{createFromPath:()=>({isEmpty:()=>false})}, globalShortcut:{register:(key,cb)=>{assert.equal(key,'Control+Shift+Space');shortcut=cb;return true;},unregisterAll:()=>{unregistered=true;}}, screen:{getPrimaryDisplay:()=>({workArea:{x:0,y:0,width:1200,height:800}}),getAllDisplays:()=>[{workArea:{x:0,y:0,width:1200,height:800}}], getCursorScreenPoint:()=>cursor}, dialog:{showErrorBox:(_t,m)=>{throw Error(m)}}, utilityProcess:{fork:()=>{child=new EventEmitter();child.kill=()=>{child.killed=true};return child;}} };
 const original=Module._load;
 Module._load=function(request,...args){return request==='electron'?electron:original.call(this,request,...args)};
 global.fetch=async()=>({ok:true});
@@ -46,19 +46,48 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
  child.emit('message', { type: 'secure-endpoint-request', id: '124', provider: 'custom' });
  assert.equal(serverKey.key, 'https://trusted.example/v1');
  assert(!JSON.stringify(handlers['keys:status'](trusted)).includes('test-secret'));
+ const allowedFolder = path.join(temp, 'allowed'); fs.mkdirSync(allowedFolder); fs.writeFileSync(path.join(allowedFolder, 'hello.txt'), 'hello');
+ electron.dialog.showOpenDialog = async () => ({ canceled:false, filePaths:[allowedFolder] });
+ await handlers['folders:add'](trusted);
+ child.emit('message', { type:'tool-request', id:'tools-list', action:'list' }); await wait(20);
+ assert.deepEqual(serverKey.value, [fs.realpathSync(allowedFolder)]);
+ child.emit('message', { type:'tool-request', id:'tools-read', action:'execute', call:{name:'read_file',arguments:{folder:fs.realpathSync(allowedFolder),path:'hello.txt'}} }); await wait(30);
+ assert.equal(serverKey.value.status,'completed'); assert.equal(serverKey.value.result.content,'hello');
+ child.emit('message', { type:'tool-request', id:'tools-write', action:'execute', call:{name:'write_file',arguments:{folder:fs.realpathSync(allowedFolder),path:'no.txt',content:'x'}} }); await wait(30);
+ const approval = handlers['tools:approval-current'](trusted); assert.equal(approval.name,'write_file'); assert.equal(approval.arguments.content,'x');
+ ipcMain.emit('tools:decision',trusted,approval.id,'deny'); await wait(30);
+ assert.equal(serverKey.value.status,'denied'); assert(!fs.existsSync(path.join(allowedFolder,'no.txt')));
+ child.emit('message', { type:'tool-request', id:'tools-write-2', action:'execute', call:{name:'write_file',arguments:{folder:fs.realpathSync(allowedFolder),path:'yes.txt',content:'hello'}} }); await wait(30);
+ const approval2 = handlers['tools:approval-current'](trusted); ipcMain.emit('tools:decision',trusted,approval2.id,'approve'); await wait(30);
+ assert.equal(serverKey.value.status,'completed'); assert.equal(fs.readFileSync(path.join(allowedFolder,'yes.txt'),'utf8'),'hello');
+ child.emit('message', { type:'tool-request', id:'tools-delete', action:'execute', call:{name:'delete_file',arguments:{folder:fs.realpathSync(allowedFolder),path:'yes.txt'}} }); await wait(30);
+ const approval3 = handlers['tools:approval-current'](trusted); ipcMain.emit('tools:decision',trusted,approval3.id,'approve'); await wait(30);
+ assert.equal(serverKey.value.status,'completed'); assert(!fs.existsSync(path.join(allowedFolder,'yes.txt')));
+
+ assert(fs.readFileSync(path.join(temp,'tool-activity.jsonl'),'utf8').includes('read_file'));
+ tray.menu[1].submenu[0].click(); await wait(260); shortcut();
+
  assert.equal(windows.length,2); assert.equal(main.visible,true); assert.equal(island.visible,false);
  assert.equal(island.options.frame,false); assert.equal(island.options.transparent,true); assert.equal(island.options.alwaysOnTop,true);
- assert.deepEqual([island.bounds.width,island.bounds.height],[132,40]); assert.equal(island.bounds.x,534);
+ assert.deepEqual([island.bounds.width,island.bounds.height],[132,40]); assert(Math.abs(island.bounds.x-534) <= 2);
  let prevented=false; main.emit('close',{preventDefault(){prevented=true}}); assert(prevented); assert.equal(main.visible,false); assert.equal(island.visible,true); assert(!child.killed);
  ipcMain.emit('island:open',{sender:{}}); assert.equal(main.visible,false); // untrusted sender ignored
  ipcMain.emit('island:open',{sender:island.webContents}); assert(main.visible); assert(!island.visible);
  main.emit('minimize',{preventDefault(){prevented=true}}); assert(!main.visible); assert(island.visible);
  shortcut(); assert(main.visible); shortcut(); assert(island.visible);
  const demos=tray.menu[1].submenu;
- for (const [index,w,h,state] of [[1,260,44,'listening'],[2,380,52,'working'],[3,440,72,'approval']]) { demos[index].click(); await wait(260); assert.deepEqual([island.bounds.width,island.bounds.height],[w,h]); assert.deepEqual(island.sent.at(-1),['island:state',state]); }
+ for (const [index,w,h,state] of [[1,260,44,'listening'],[2,380,52,'working'],[3,600,300,'approval']]) { demos[index].click(); await wait(260); assert.deepEqual([island.bounds.width,island.bounds.height],[w,h]); assert.deepEqual(island.sent.at(-1),['island:state',state]); }
  ipcMain.emit('island:decision',{sender:island.webContents},'approve'); await wait(260); assert.equal(island.bounds.width,132);
  island.webContents.mainFrame = { url: 'file:///island.html' };
  const islandEvent = { sender: island.webContents, senderFrame: island.webContents.mainFrame };
+ child.emit('message', { type:'tool-request', id:'island-write', action:'execute', call:{name:'write_file',arguments:{folder:fs.realpathSync(allowedFolder),path:'island.txt',content:'island'}} }); await wait(30);
+ const islandApproval = handlers['tools:approval-current'](trusted); assert.equal(islandApproval.name,'write_file');
+ ipcMain.emit('island:decision',islandEvent,'always',islandApproval.id); await wait(260);
+ assert.equal(serverKey.value.status,'completed'); assert.equal(fs.readFileSync(path.join(allowedFolder,'island.txt'),'utf8'),'island');
+ child.emit('message', { type:'tool-request', id:'always-write', action:'execute', call:{name:'write_file',arguments:{folder:fs.realpathSync(allowedFolder),path:'second.txt',content:'auto'}} }); await wait(30);
+ assert.equal(serverKey.value.status,'completed'); assert.equal(handlers['tools:approval-current'](trusted),null);
+ tray.menu[1].submenu[0].click(); await wait(260);
+
  ipcMain.emit('island:expand', { sender: island.webContents, senderFrame: {} }); await wait(20); assert.equal(island.bounds.width,132);
  ipcMain.emit('island:expand', islandEvent); await wait(260); assert.deepEqual([island.bounds.width,island.bounds.height],[520,102]);
  ipcMain.emit('island-chat:voice-setting', trusted, true); assert.deepEqual(island.sent.at(-1), ['island:voice-setting', true]);

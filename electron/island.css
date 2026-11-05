@@ -9,7 +9,12 @@ html, body { margin:0; width:100%; height:100%; overflow:hidden; background:tran
 .listening .listening-content { display:flex; align-items:center; justify-content:space-between; font-size:12px; font-weight:600; }
 .wave { display:flex; align-items:center; gap:3px; height:22px; }.wave i { width:3px; height:6px; border-radius:2px; background:#B5DEFF; animation:wave 1s ease-in-out infinite alternate; }.wave i:nth-child(2),.wave i:nth-child(4) { animation-delay:.2s; }.wave i:nth-child(3) { animation-delay:.4s; }
 .working .working-content { display:block; }.working-label { display:flex; justify-content:space-between; gap:10px; font-size:11px; white-space:nowrap; }.working-label span:first-child { font-weight:700; }.working-label span:last-child { overflow:hidden; text-overflow:ellipsis; color:#aab6d2; }.progress { height:3px; border-radius:4px; background:#252e43; overflow:hidden; margin-top:8px; }.progress span { display:block; width:40%; height:100%; background:#83c7ff; border-radius:4px; animation:progress 2s ease-in-out infinite alternate; }
-.approval .approval-content { display:flex; align-items:center; gap:8px; }.approval-content div { flex:1; min-width:0; }.approval-content strong,.approval-content div span { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }.approval-content strong { font-size:12px; }.approval-content div span { color:#aab6d2; font-size:11px; margin-top:3px; }.approval-content button { border:0; border-radius:999px; padding:8px 12px; font:600 11px 'Segoe UI', sans-serif; cursor:pointer; color:#0A1020; background:#B5DEFF; }.approval-content button:last-child { color:white; background:#30384a; }.approval-content button:focus-visible { outline:2px solid white; }
+.approval .approval-content { display:flex; flex-direction:column; gap:8px; min-width:0; }
+.approval-title { display:flex; justify-content:space-between; align-items:center; font-size:12px; }
+.approval-content pre { margin:0; height:160px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; color:#cbd7ed; font:11px 'Segoe UI',sans-serif; background:#11192a; border-radius:8px; padding:8px; }
+.approval-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.approval-content button { border:0; border-radius:9px; padding:7px 9px; font:600 10px 'Segoe UI',sans-serif; cursor:pointer; color:#0A1020; background:#B5DEFF; }
+.approval-content button:focus-visible { outline:2px solid white; }
 @keyframes wave { to { height:19px; } } @keyframes progress { to { transform:translateX(150%); } } @keyframes appear { from { opacity:0; } to { opacity:1; } }
 @media(prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; } }
 

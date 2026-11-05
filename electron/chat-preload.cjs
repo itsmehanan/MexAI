@@ -45,3 +45,9 @@ contextBridge.exposeInMainWorld('islandChat', {
   activeAgent: agent => ipcRenderer.send('island-chat:active-agent', agent),
   status: status => ipcRenderer.send('island-chat:status', status),
 });
+
+contextBridge.exposeInMainWorld('toolApprovals', {
+  current: () => ipcRenderer.invoke('tools:approval-current'),
+  onApproval: callback => { const listener = (_event, request) => callback(request); ipcRenderer.on('tools:approval', listener); return () => ipcRenderer.removeListener('tools:approval', listener); },
+  decide: (id, choice) => ipcRenderer.send('tools:decision', id, choice),
+});

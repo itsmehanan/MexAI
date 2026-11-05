@@ -16,12 +16,20 @@ export function parseFreeModels(data: unknown): FreeOpenRouterModel[] {
   }
   return result.sort((a, b) => a.id.localeCompare(b.id));
 }
-let cached: { models: FreeOpenRouterModel[]; time: number } | undefined;
+let cached: { models: FreeOpenRouterModel[]; toolModels: Set<string>; time: number } | undefined;
 export async function getFreeOpenRouterModels(refresh = false): Promise<FreeOpenRouterModel[]> {
   if (!refresh && cached && Date.now() - cached.time < 5 * 60_000) return cached.models;
   const response = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`OpenRouter catalog returned HTTP ${response.status}.`);
-  const models = parseFreeModels(await response.json());
-  cached = { models, time: Date.now() };
+  const data: any = await response.json();
+  const models = parseFreeModels(data);
+  const toolModels = new Set<string>((data.data as any[]).filter(item => typeof item?.id === 'string' && Array.isArray(item.supported_parameters) && item.supported_parameters.includes('tools')).map(item => item.id));
+  cached = { models, toolModels, time: Date.now() };
   return models;
+}
+
+/** Fail closed for unknown models; the public catalog is the capability source. */
+export async function openRouterSupportsTools(model: string): Promise<boolean> {
+  await getFreeOpenRouterModels();
+  return cached?.toolModels.has(model) === true;
 }

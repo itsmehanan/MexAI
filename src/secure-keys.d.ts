@@ -52,3 +52,6 @@ interface Window {
     onError(message: string): void;
   }): { start(): Promise<void>; stop(): void; dispose(): void; getState(): VoicePhase } };
 }
+
+type ToolApproval = { id: string; name: string; arguments: Record<string, string>; source: string; destination?: string; overwrite: boolean };
+interface Window { toolApprovals?: { current(): Promise<ToolApproval | null>; onApproval(callback: (request: ToolApproval | null) => void): () => void; decide(id: string, choice: 'approve' | 'deny' | 'always'): void } }

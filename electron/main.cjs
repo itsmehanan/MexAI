@@ -1,5 +1,7 @@
+const { createApprovals } = require('./approvals.cjs');
+const { createFileTools } = require('./file-tools.cjs');
 const { createFolderSettings } = require('./folder-settings.cjs');
-const { app, BrowserWindow, dialog, utilityProcess, Tray, Menu, nativeImage, globalShortcut, screen, ipcMain, safeStorage, autoUpdater: electronAutoUpdater } = require('electron');
+const { app, BrowserWindow, dialog, utilityProcess, Tray, Menu, nativeImage, globalShortcut, screen, ipcMain, safeStorage, shell, autoUpdater: electronAutoUpdater } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { createVault } = require('./key-vault.cjs');
@@ -9,7 +11,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const SERVER_PORT = 3737;
 const SERVER_HOST = '127.0.0.1';
 const APP_URL = `http://${SERVER_HOST}:${SERVER_PORT}`;
-const ISLAND_SIZES = { resting: [132, 40], listening: [260, 44], working: [380, 52], approval: [440, 72], update: [360, 52], command: [520, 102], result: [520, 102] };
+const ISLAND_SIZES = { resting: [132, 40], listening: [260, 44], working: [380, 52], approval: [600, 300], update: [360, 52], command: [520, 102], result: [520, 102] };
 let serverProcess, serverExitError, mainWindow, islandWindow, tray;
 let quitting = false;
 let failureReported = false;
@@ -17,7 +19,7 @@ let islandState = 'resting';
 let activeIslandAgent = 'hanex';
 let sendVoiceImmediately = false;
 let islandPosition;
-let resizeTimer, saveTimer, dragOrigin, vault, updateController;
+let resizeTimer, saveTimer, dragOrigin, vault, updateController, approvals;
 
 app.setName('Hanex & Shumex');
 app.setAppUserModelId('com.itsmehanan.hanexshumex');
@@ -159,10 +161,10 @@ function setupIslandIpc() {
   });
   ipcMain.on('island:restart-update', event => { if (validIslandSender(event) && event.senderFrame === islandWindow.webContents.mainFrame) updateController?.restart(); });
   ipcMain.on('island:open', event => { if (validIslandSender(event)) showMain(); });
-  ipcMain.on('island:decision', (event, choice) => {
-    if (!validIslandSender(event) || islandState !== 'approval' || !['approve', 'deny'].includes(choice)) return;
-    // Demo only: no real task or authorization is connected yet.
-    setIslandState('resting');
+  ipcMain.on('island:decision', (event, choice, id) => {
+    if (!validIslandSender(event) || islandState !== 'approval' || !['approve', 'deny', 'always'].includes(choice)) return;
+    if (approvals?.current()) { if (validIslandFrame(event)) approvals.decide(id, choice); }
+    else if (['approve', 'deny'].includes(choice)) setIslandState('resting');
   });
   ipcMain.on('island:drag-start', event => {
     if (!validIslandSender(event)) return;
@@ -207,6 +209,13 @@ async function startDesktop() {
   await app.whenReady();
   vault = createVault(safeStorage, path.join(app.getPath('userData'), 'provider-keys.json'));
   const folderSettings = createFolderSettings(path.join(app.getPath('userData'), 'allowed-folders.json'), dialog, () => mainWindow);
+  approvals = createApprovals(path.join(app.getPath('userData'), 'tool-approvals.json'), request => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('tools:approval', request);
+    if (islandWindow && !islandWindow.isDestroyed()) {
+      islandWindow.webContents.send('island:approval', request);
+      setIslandState(request ? 'approval' : 'working');
+    }
+  });
   const trustedChat = event => mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame && event.senderFrame.url.startsWith(`${APP_URL}/`);
   for (const [channel, action] of Object.entries({
     'keys:status': () => vault.status(),
@@ -230,11 +239,13 @@ async function startDesktop() {
   for (const [channel, action] of Object.entries({
     'folders:list': () => folderSettings.list(),
     'folders:add': () => folderSettings.add(),
-    'folders:remove': folder => folderSettings.remove(folder),
+    'folders:remove': folder => { approvals.revokeFolder(folder); return folderSettings.remove(folder); },
   })) ipcMain.handle(channel, (event, ...args) => {
     if (!trustedChat(event)) throw new Error('Unauthorized folder settings request.');
     return action(...args);
   });
+  ipcMain.on('tools:decision', (event, id, choice) => { if (trustedChat(event)) approvals.decide(id, choice); });
+  ipcMain.handle('tools:approval-current', event => { if (!trustedChat(event)) throw new Error('Unauthorized approval request.'); return approvals.current(); });
   ipcMain.handle('island:transcribe', async (event, bytes, type) => {
     if (!validIslandFrame(event)) throw new Error('Unauthorized transcription request.');
     const mime = typeof type === 'string' ? type.split(';')[0].toLowerCase() : '';
@@ -258,7 +269,7 @@ async function startDesktop() {
     if (!trustedChat(event) || !status || !['working', 'result', 'error', 'rejected'].includes(status.phase) || !['hanex', 'shumex'].includes(status.agent) || typeof status.text !== 'string' || status.text.length > 1000 || (status.id !== undefined && (typeof status.id !== 'string' || status.id.length > 100))) return;
     if (!islandWindow || islandWindow.isDestroyed()) return;
     islandWindow.webContents.send('island:chat', status);
-    if (status.phase !== 'rejected') setIslandState(status.phase === 'working' ? 'working' : 'result');
+    if (status.phase !== 'rejected' && !approvals.current()) setIslandState(status.phase === 'working' ? 'working' : 'result');
   });
   let updater = null;
   if (app.isPackaged && process.platform === 'win32') {
@@ -283,8 +294,21 @@ async function startDesktop() {
     env: { ...process.env, NODE_ENV: app.isPackaged ? 'production' : 'development', MEXAI_APP_ROOT: projectRoot, MEXAI_HOST: SERVER_HOST, MEXAI_PORT: String(SERVER_PORT), MEXAI_SECURE_KEYS: '1' },
   });
   serverProcess = child;
+  const activeTools = new Map();
+  const fileTools = createFileTools({ folders: () => folderSettings.list(), logFile: path.join(app.getPath('userData'), 'tool-activity.jsonl'), approve: (request, signal) => approvals.request(request, signal), trash: p => shell.trashItem(p) });
   // The utility process asks the main process directly; decrypted keys never travel to the renderer.
   child.on('message', message => {
+    if (message?.type === 'tool-cancel' && typeof message.id === 'string') { activeTools.get(message.id)?.abort(); return; }
+    if (message?.type === 'tool-request' && typeof message.id === 'string') {
+      const controller = new AbortController(); activeTools.set(message.id, controller);
+      Promise.resolve().then(async () => {
+        if (message.action === 'list') return folderSettings.list();
+        if (message.action === 'rejected') return fileTools.rejected(message.call);
+        if (message.action === 'execute' && ['read_file', 'list_folder', 'search_files', 'write_file', 'move_file', 'delete_file'].includes(message.call?.name)) return fileTools(message.call, controller.signal);
+        throw new Error('Tool is unavailable.');
+      }).then(value => child.postMessage({ type: 'tool-response', id: message.id, value }), () => child.postMessage({ type: 'tool-response', id: message.id, error: 'Tool service failed.' })).finally(() => activeTools.delete(message.id));
+      return;
+    }
     if (!['secure-key-request', 'secure-endpoint-request'].includes(message?.type) || typeof message.id !== 'string') return;
     try { child.postMessage({ type: 'secure-key-response', id: message.id, key: message.type === 'secure-endpoint-request' ? vault.getCustomEndpoint() : vault.getForServer(message.provider) }); }
     catch { child.postMessage({ type: 'secure-key-response', id: message.id, error: 'Secure key storage is unavailable.' }); }
@@ -292,6 +316,7 @@ async function startDesktop() {
   child.stdout?.pipe(process.stdout, { end: false });
   child.stderr?.pipe(process.stderr, { end: false });
   child.once('exit', code => {
+    for (const controller of activeTools.values()) controller.abort();
     if (serverProcess === child) serverProcess = undefined;
     if (!quitting) {
       serverExitError = new Error(`The Express server exited unexpectedly (code ${code}). Port ${SERVER_PORT} may already be in use.`);

@@ -37,6 +37,7 @@ export interface ChatMessage {
   model?: string;
   status?: 'sending' | 'streaming' | 'complete' | 'error';
   error?: string;
+  toolCards?: { id: string; name: string; arguments: unknown; status: string; result?: unknown; error?: string }[];
 }
 
 export interface AgentTheme {

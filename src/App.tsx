@@ -136,6 +136,15 @@ export default function App() {
     return DEFAULT_SETTINGS;
   });
 
+  const [toolApproval, setToolApproval] = useState<ToolApproval | null>(null);
+  useEffect(() => {
+    if (!window.toolApprovals) return;
+    let received = false;
+    const off = window.toolApprovals.onApproval(request => { received = true; setToolApproval(request); });
+    window.toolApprovals.current().then(request => { if (!received) setToolApproval(request); }).catch(() => {});
+    return off;
+  }, []);
+
   // Backend status & available environment keys
   const [updateState, setUpdateState] = useState<DesktopUpdateState>({ version: '', status: 'unavailable' });
   useEffect(() => {
@@ -418,6 +427,14 @@ export default function App() {
                 setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => m.id === assistantPlaceholderId ? { ...m, content: '', provider: undefined, model: undefined } : m) }));
               } else if (data.answeringModel) {
                 setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => m.id === assistantPlaceholderId ? { ...m, provider: data.answeringModel.provider, model: data.answeringModel.model } : m) }));
+              } else if (data.toolCard) {
+                setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => {
+                  if (m.id !== assistantPlaceholderId) return m;
+                  const cards = [...(m.toolCards || [])];
+                  const index = cards.findIndex(card => card.id === data.toolCard.id);
+                  if (index < 0) cards.push(data.toolCard); else cards[index] = data.toolCard;
+                  return { ...m, toolCards: cards };
+                }) }));
               } else if (data.error) {
                 streamError = data.error;
               } else if (data.text) {
@@ -676,6 +693,15 @@ export default function App() {
 
   return (
     <div className={`app-shell theme-${activeAgentId}`}>
+      {toolApproval && <div className="fixed inset-0 z-[100] bg-black/75 flex items-center justify-center p-5" role="alertdialog" aria-modal="true" aria-labelledby="approval-title">
+        <div className="w-full max-w-2xl max-h-[85vh] overflow-auto rounded-2xl border border-cyan-300/30 bg-[#11182a] p-5 text-white shadow-2xl">
+          <h2 id="approval-title" className="text-lg font-bold">Approve file action: {toolApproval.name}</h2>
+          <p className="text-sm text-slate-300 mt-2">{toolApproval.name === 'delete_file' ? 'Move this file to the Recycle Bin.' : toolApproval.name === 'move_file' ? 'Move this file to the destination.' : toolApproval.overwrite ? 'Replace the existing file with this exact content.' : 'Create this file with this exact content.'}</p>
+          <pre className="mt-3 max-h-[48vh] overflow-auto rounded-xl bg-black/30 p-3 text-xs whitespace-pre-wrap break-all select-text">{JSON.stringify({ source:toolApproval.source, ...(toolApproval.destination ? {destination:toolApproval.destination} : {}), ...toolApproval.arguments }, null, 2)}</pre>
+          <div className="mt-4 flex flex-wrap gap-2">{([['approve','Approve'],['deny','Deny'],['always','Always allow this kind of action in this folder']] as const).map(([choice,label]) => <button key={choice} type="button" onClick={() => window.toolApprovals?.decide(toolApproval.id, choice)} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/20">{label}</button>)}</div>
+          {toolApproval.name === 'move_file' && <p className="mt-2 text-xs text-slate-400">Always allow applies to this action and this source/destination folder pair.</p>}
+        </div>
+      </div>}
       {/* Desktop Window Title Header with Multi-Provider Model Dropdown */}
       <DesktopHeader
         activeAgent={activeAgent}
