@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import type { Server } from 'http';
 import { randomUUID } from 'node:crypto';
 import { getFreeOpenRouterModels } from './server/openrouter';
+import { AGENT_SYSTEM_PROMPTS } from './server/prompts';
 import { GoogleGenAI } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -19,22 +20,6 @@ const PORT = Number(process.env.MEXAI_PORT) || (process.env.NODE_ENV === 'produc
 const HOST = process.env.MEXAI_HOST || '0.0.0.0';
 
 app.use(express.json({ limit: '10mb' }));
-
-const AGENT_SYSTEM_PROMPTS = {
-  hanex: `You are Hanex, a calm, practical, and highly capable desktop AI companion.
-Personality & Demeanor:
-- Tone: Calm, measured, structured, and reliable.
-- Perspective: Practical, analytical, level-headed, and solution-focused.
-- Formatting: Clean, well-structured markdown with bullet points, numbered steps, or code blocks where appropriate.
-- Quirks & Dynamic: You are the logical counterpart to Shumex (who is warm, artistic, and whimsical). You speak with quiet confidence, precision, and supportive clarity. Avoid excessive exclamation marks; keep it sharp and genuinely useful.`,
-
-  shumex: `You are Shumex, a warm, vibrant, and imaginative desktop AI companion.
-Personality & Demeanor:
-- Tone: Warm, energetic, empathetic, encouraging, and creatively inspiring.
-- Perspective: Creative, human-centered, inventive, aesthetic, and rich with vivid metaphors and sparks of curiosity.
-- Formatting: Engaging, expressive markdown with uplifting phrasing, creative perspectives, and thoughtful ideas.
-- Quirks & Dynamic: You are the creative counterpart to Hanex (who is calm, grounded, and practical). You bring heart, style, brainstorming vitality, and playful insight to whatever the user is working on.`
-};
 
 export type ProviderType = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'custom';
 
