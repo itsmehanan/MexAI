@@ -12,7 +12,7 @@ test('Gemini calls read tools and receives results before final response', async
   try {
     const output = await runToolModel({provider:'gemini',model:'gemini-test',key:'secret-key',messages:[{role:'user',content:'Read the file'}],system:'Be useful.',folders:['C:\\Allowed'],signal:new AbortController().signal,onCard:card=>cards.push(card),execute:async()=>({status:'completed',result:{content:'hello'}})});
     assert.equal(output,'The file says hello.'); assert.equal(requestCount,2); assert.equal(cards[0].status,'running'); assert.equal(cards[1].status,'completed');
-    assert.equal(payloads[0].tools[0].functionDeclarations.length,8);
+    assert.equal(payloads[0].tools[0].functionDeclarations.length,12);
     assert(payloads[1].contents.some((item:any)=>item.parts?.some((part:any)=>part.functionResponse?.name === 'read_file')));
   } finally { global.fetch = original; }
 });
@@ -26,7 +26,7 @@ test('OpenRouter tool calls use structured messages and return results', async (
   };
   try {
     const output = await runToolModel({provider:'openrouter',model:'model:free',key:'key',messages:[{role:'user',content:'List files'}],system:'Be useful.',folders:['C:\\Allowed'],signal:new AbortController().signal,onCard:()=>{},execute:async()=>({status:'completed',result:{entries:['x']}})});
-    assert.equal(output,'One file.'); assert.equal(payloads[0].tools.length,8); assert(payloads[1].messages.some((m:any)=>m.role==='tool'&&m.tool_call_id==='call-1'));
+    assert.equal(output,'One file.'); assert.equal(payloads[0].tools.length,12); assert(payloads[1].messages.some((m:any)=>m.role==='tool'&&m.tool_call_id==='call-1'));
   } finally { global.fetch = original; }
 });
 

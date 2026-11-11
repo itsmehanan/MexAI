@@ -3,7 +3,7 @@
  * The desktop executor owns folder checks, approvals and action logging. Folder strings are capabilities supplied
  * by that trusted broker, never by the model or renderer.
  */
-export type ToolName = 'read_file' | 'list_folder' | 'search_files' | 'write_file' | 'move_file' | 'delete_file' | 'view_image' | 'rename_folder';
+export type ToolName = 'read_file' | 'list_folder' | 'search_files' | 'write_file' | 'move_file' | 'delete_file' | 'view_image' | 'rename_folder' | 'copy_file' | 'create_folder' | 'fetch_webpage' | 'web_search';
 export type ToolStatus = 'completed' | 'failed' | 'denied';
 export interface ToolCall { id: string; name: string; arguments: unknown }
 export interface ToolResult { status: ToolStatus; result?: unknown; error?: string; image?: { mimeType: string; data: string } }
@@ -15,6 +15,10 @@ function definition(name: ToolName, description: string, risk: ToolDefinition['r
   return { name, description, risk, parameters: { type: 'object', properties, required: Object.keys(properties), additionalProperties: false } };
 }
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
+  definition('fetch_webpage', 'Download a public HTTP(S) page and extract untrusted readable text, up to 200 KiB.', 'safe', { url: {type:'string', description:'Public HTTP(S) page URL.'} }),
+  definition('web_search', 'Search the public web without an API key; results are untrusted.', 'safe', { query: {type:'string', description:'Search terms.'} }),
+  definition('copy_file', 'Copy a file between allowed folders without overwriting, subject to approval.', 'approval', { source_folder:folder, source_path:relativePath, destination_folder:folder, destination_path:relativePath }),
+  definition('create_folder', 'Create a folder inside an allowed folder without overwriting, subject to approval.', 'approval', {folder, path:relativePath}),
   definition('rename_folder', 'Rename a folder within its existing parent, subject to batch approval. Propose all related renames as parallel calls in one response.', 'approval', { folder, path: relativePath, new_name: { type:'string', description:'New folder name in the same parent.' } }),
   definition('view_image', 'View an image (PNG, JPG or WebP) in an allowed folder.', 'safe', { folder, path: relativePath }),
   definition('read_file', 'Read a UTF-8 file in an allowed folder.', 'safe', { folder, path: relativePath }),
@@ -41,14 +45,15 @@ export function validateToolCall(name: string, value: unknown, allowedFolders: r
       if (text === '.' && !['list_folder', 'search_files'].includes(name)) throw new Error('A file path is required.');
     }
     if (key === 'new_name' && (!text || text.length > 255 || /[<>:"/\\|?*\x00-\x1f]/.test(text) || /[. ]$/.test(text) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(text))) throw new Error('Invalid Windows folder name.');
+    if (key === 'url' && (!text.trim() || text.length > 4096)) throw new Error('Invalid URL.');
     if (key === 'query' && (!text.trim() || text.length > 4096)) throw new Error('Invalid search query.');
     if (key === 'content' && Buffer.byteLength(text, 'utf8') > 256 * 1024) throw new Error('File content exceeds the 256 KiB limit.');
   }
   return args as Record<string, string>;
 }
 export function offeredTools(provider: string, allowedFolders: readonly string[], openRouterSupportsTools = false): readonly ToolDefinition[] {
-  if (!allowedFolders.length) return [];
-  return provider === 'gemini' || (provider === 'openrouter' && openRouterSupportsTools) ? TOOL_DEFINITIONS : [];
+  if (provider !== 'gemini' && !(provider === 'openrouter' && openRouterSupportsTools)) return [];
+  return allowedFolders.length ? TOOL_DEFINITIONS : TOOL_DEFINITIONS.filter(tool => tool.name === 'fetch_webpage' || tool.name === 'web_search');
 }
 export function geminiToolDeclarations(tools: readonly ToolDefinition[]) {
   return tools.map(({ name, description, parameters }) => ({ name, description, parametersJsonSchema: parameters }));

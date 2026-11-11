@@ -13,7 +13,7 @@ function createApprovals(file, onChange) {
     try { fs.writeFileSync(tmp, JSON.stringify(data), {mode:0o600,flag:'wx'}); fs.renameSync(tmp,file); }
     finally { try { fs.unlinkSync(tmp); } catch(e) { if (e.code !== 'ENOENT') throw e; } }
   }
-  function scope(request) { const a = request.arguments; return JSON.stringify([request.name === 'rename_folder_batch' ? 'rename_folder' : request.name, ...(request.name === 'move_file' ? [a.source_folder,a.destination_folder] : request.name === 'rename_folder_batch' ? [a.folder, ...a.parents] : [a.folder])]); }
+  function scope(request) { const a = request.arguments; return JSON.stringify([request.name === 'rename_folder_batch' ? 'rename_folder' : request.name, ...(['move_file','copy_file'].includes(request.name) ? [a.source_folder,a.destination_folder] : request.name === 'rename_folder_batch' ? [a.folder, ...a.parents] : [a.folder])]); }
   function refresh() { onChange(queue[0]?.request || null); }
   function decide(id, choice) {
     const item = queue[0];

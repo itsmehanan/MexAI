@@ -23,6 +23,11 @@ test('server requests vault keys directly and redacts split streamed responses',
   let audioPayload: any;
   let geminiToolRound = 0;
   global.fetch = async (_url, init) => {
+    if (scenario === 'gemini-web' && String(_url).includes('generativelanguage.googleapis.com') && String(_url).includes('generateContent')) {
+      geminiToolRound++;
+      const parts = geminiToolRound === 1 ? [{functionCall:{name:'fetch_webpage', args:{url:'http://127.0.0.1/'}}}] : [{text:'That page is not accessible.'}];
+      return new Response(JSON.stringify({candidates:[{content:{role:'model',parts},finishReason:'STOP'}]}), {status:200,headers:{'Content-Type':'application/json'}});
+    }
     if (scenario === 'gemini-tools' && String(_url).includes('generativelanguage.googleapis.com') && String(_url).includes('generateContent')) {
       geminiToolRound++;
       const parts = geminiToolRound === 1 ? [{functionCall:{name:'read_file', args:{folder:'C:\\Allowed',path:'hello.txt'}}}] : [{text:'Read successfully.'}];
@@ -87,7 +92,10 @@ test('server requests vault keys directly and redacts split streamed responses',
     toolFolders = ['C:\\Allowed']; scenario = 'gemini-tools';
     const toolStream = await post('/api/chat/stream', { provider: 'gemini', model: 'gemini-test', messages: [{role:'user',content:'Read hello.txt'}] });
     assert(toolStream.includes('\"toolCard\"')); assert(toolStream.includes('\"status\":\"completed\"')); assert(toolStream.includes('Read successfully.'));
-    toolFolders = []; scenario = 'normal';
+    toolFolders = []; scenario = 'gemini-web'; geminiToolRound = 0;
+    const webStream = await post('/api/chat/stream', { provider:'gemini', model:'gemini-test', messages:[{role:'user',content:'Fetch this page'}] });
+    assert(webStream.includes('fetch_webpage')); assert(webStream.includes('non-public address')); assert(webStream.includes('That page is not accessible.'));
+    scenario = 'normal';
     const result = await post('/api/providers/test', { provider: 'openai' });
     assert.equal(authorization, `Bearer ${secret}`);
     assert(!result.includes(secret));

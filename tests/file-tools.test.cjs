@@ -49,3 +49,19 @@ test('view_image enforces formats and size, scales and returns private image dat
   assert(!(await fs.readFile(path.join(dir,'log'),'utf8')).includes(ok.image.data));
  } finally {await fs.rm(dir,{recursive:true,force:true});}
 });
+
+test('copy and create require approval and never overwrite, with folder and link checks', async () => {
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mexai-copy-')); const root=path.join(dir,'root'), other=path.join(dir,'other'); await fs.mkdir(root); await fs.mkdir(other); await fs.writeFile(path.join(root,'src'),'source'); await fs.writeFile(path.join(other,'exists'),'keep');
+ let choice='deny', requests=[]; const run=createFileTools({folders:async()=>[root,other],logFile:path.join(dir,'log'),approve:async req=>{requests.push(req);return choice;},trash:async()=>{}});
+ const copy=(destination='new')=>({name:'copy_file',arguments:{source_folder:root,source_path:'src',destination_folder:other,destination_path:destination}});
+ const create=(folder=root,p='newdir')=>({name:'create_folder',arguments:{folder,path:p}});
+ try {
+  assert.equal((await run(copy())).status,'denied'); assert.equal((await run(create())).status,'denied');
+  choice='approve'; assert.equal((await run(copy())).status,'completed'); assert.equal(await fs.readFile(path.join(other,'new'),'utf8'),'source');
+  assert.equal((await run(copy('exists'))).status,'failed'); assert.equal(await fs.readFile(path.join(other,'exists'),'utf8'),'keep');
+  assert.equal((await run(create())).status,'completed'); assert.equal((await run(create())).status,'failed');
+  assert.equal((await run(create(dir,'outside'))).status,'failed'); assert.equal((await run(create(root,'../escape'))).status,'failed');
+  await fs.symlink(other,path.join(root,'link'),'dir'); assert.equal((await run(create(root,'link/escape'))).status,'failed');
+  assert.equal(requests[0].source,path.join(root,'src')); assert.equal(requests[0].destination,path.join(other,'new'));
+ } finally {await fs.rm(dir,{recursive:true,force:true});}
+});

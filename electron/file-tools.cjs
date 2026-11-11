@@ -41,21 +41,22 @@ function createFileTools({ folders, logFile, approve, trash, nativeImage }) {
     await audit({ id, event: 'requested', name, arguments: safeArgs });
     try {
       cancelled();
-      const definitions = { view_image: ['folder','path'], read_file: ['folder','path'], list_folder: ['folder','path'], search_files: ['folder','path','query'], write_file: ['folder','path','content'], move_file: ['source_folder','source_path','destination_folder','destination_path'], delete_file: ['folder','path'] };
+      const definitions = { view_image: ['folder','path'], read_file: ['folder','path'], list_folder: ['folder','path'], search_files: ['folder','path','query'], write_file: ['folder','path','content'], move_file: ['source_folder','source_path','destination_folder','destination_path'], copy_file: ['source_folder','source_path','destination_folder','destination_path'], create_folder: ['folder','path'], delete_file: ['folder','path'] };
       const keys = definitions[name];
       if (!keys || !args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length !== keys.length || keys.some(k => typeof args[k] !== 'string' || args[k].includes('\0'))) throw new Error('Invalid tool arguments.');
       const allowed = await folders();
       for (const k of keys.filter(k => k.endsWith('folder'))) if (!allowed.includes(args[k])) throw new Error('Folder is not allowed.');
       if (name === 'write_file' && Buffer.byteLength(args.content) > MAX) throw new Error('Content exceeds 256 KiB.');
       if (name === 'search_files' && (!args.query.trim() || args.query.length > 4096)) throw new Error('Invalid search query.');
-      const target = () => checked(args.folder, args.path, name === 'write_file', name === 'list_folder' || name === 'search_files');
+      const target = () => checked(args.folder, args.path, name === 'write_file' || name === 'create_folder', name === 'list_folder' || name === 'search_files');
       const source = () => checked(args.source_folder, args.source_path);
       const destination = () => checked(args.destination_folder, args.destination_path, true);
-      if (['write_file','move_file','delete_file'].includes(name)) {
-        const src = name === 'move_file' ? await source() : await target();
-        const dst = name === 'move_file' ? await destination() : undefined;
+      if (['write_file','move_file','delete_file','copy_file','create_folder'].includes(name)) {
+        const src = ['move_file','copy_file'].includes(name) ? await source() : await target();
+        const dst = ['move_file','copy_file'].includes(name) ? await destination() : undefined;
         if (dst) { try { await fs.lstat(dst); throw new Error('Destination already exists.'); } catch (e) { if (e.code !== 'ENOENT') throw e; } }
-        const stat = await fs.stat(src).catch(e => { if (name === 'write_file' && e.code === 'ENOENT') return null; throw e; });
+        const stat = await fs.stat(src).catch(e => { if ((name === 'write_file' || name === 'create_folder') && e.code === 'ENOENT') return null; throw e; });
+        if (name === 'create_folder' && stat) throw new Error('Destination already exists.');
         if (stat && !stat.isFile()) throw new Error('Only regular files may be changed.');
         const decision = await approve({ id, name, arguments: args, source: src, destination: dst, overwrite: !!stat }, signal);
         await audit({ id, event: 'decision', decision });
@@ -64,6 +65,8 @@ function createFileTools({ folders, logFile, approve, trash, nativeImage }) {
         const current = await folders();
         for (const k of keys.filter(k => k.endsWith('folder'))) if (!current.includes(args[k])) throw new Error('Folder permission was removed.');
         if (name === 'write_file') { const p = await target(); cancelled(); await fs.writeFile(p, args.content, { encoding: 'utf8', flag: 'w' }); }
+        if (name === 'create_folder') { const p = await target(); cancelled(); await fs.mkdir(p); }
+        if (name === 'copy_file') { const a = await source(), b = await destination(); if (!(await fs.stat(a)).isFile()) throw new Error('Only regular files may be copied.'); cancelled(); await fs.copyFile(a, b, require('node:fs').constants.COPYFILE_EXCL); }
         if (name === 'delete_file') { const p = await target(); cancelled(); await trash(p); }
         if (name === 'move_file') { const a = await source(), b = await destination(); try { await fs.lstat(b); throw new Error('Destination already exists.'); } catch (e) { if (e.code !== 'ENOENT') throw e; } cancelled();
           try { await fs.rename(a, b); }

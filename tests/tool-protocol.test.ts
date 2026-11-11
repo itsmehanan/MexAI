@@ -7,15 +7,15 @@ const read = (id: string) => ({ id, name: 'read_file', arguments: { folder: fold
 
 test('definitions are offered only for configured folders and verified provider capabilities', () => {
   assert.deepEqual(TOOL_DEFINITIONS.map(tool => [tool.name, tool.risk]), [
-    ['rename_folder', 'approval'], ['view_image', 'safe'], ['read_file', 'safe'], ['list_folder', 'safe'], ['search_files', 'safe'],
+    ['fetch_webpage','safe'], ['web_search','safe'], ['copy_file','approval'], ['create_folder','approval'], ['rename_folder', 'approval'], ['view_image', 'safe'], ['read_file', 'safe'], ['list_folder', 'safe'], ['search_files', 'safe'],
     ['write_file', 'approval'], ['move_file', 'approval'], ['delete_file', 'approval'],
   ]);
-  assert.equal(offeredTools('gemini', []).length, 0);
+  assert.equal(offeredTools('gemini', []).length, 2);
   assert.equal(offeredTools('openrouter', folders, false).length, 0);
-  assert.equal(offeredTools('openrouter', folders, true).length, 8);
+  assert.equal(offeredTools('openrouter', folders, true).length, 12);
   assert.equal(offeredTools('openai', folders, true).length, 0);
   assert.equal(geminiToolDeclarations(TOOL_DEFINITIONS)[0].parametersJsonSchema.type, 'object');
-  assert.equal(openRouterToolDeclarations(TOOL_DEFINITIONS)[0].function.name, 'rename_folder');
+  assert.equal(openRouterToolDeclarations(TOOL_DEFINITIONS)[0].function.name, 'fetch_webpage');
 });
 
 test('tool arguments reject traversal, absolute and unapproved folders', () => {
@@ -32,7 +32,7 @@ test('tool arguments reject traversal, absolute and unapproved folders', () => {
 test('multiple calls produce cards and results in order without retrying actions', async () => {
   const cards: string[] = []; let round = 0, executions = 0;
   const result = await runToolLoop({ provider: 'gemini', allowedFolders: folders, signal: new AbortController().signal,
-    next: async (history, offered) => { assert.equal(offered.length, 8); if (round++ === 0) return { calls: [read('1'), read('2')] }; assert.equal(history.length, 3); return { text: 'Done.' }; },
+    next: async (history, offered) => { assert.equal(offered.length, 12); if (round++ === 0) return { calls: [read('1'), read('2')] }; assert.equal(history.length, 3); return { text: 'Done.' }; },
     execute: async call => { executions++; return call.id === '1' ? { status: 'completed', result: 'ok' } : { status: 'denied', error: 'Denied.' }; },
     onCard: card => cards.push(`${card.id}:${card.status}`),
   });
@@ -52,7 +52,7 @@ test('calls are capped at 60 and tools are removed on the final turn', async () 
 test('unoffered, duplicate and cancelled tool calls cannot run', async () => {
   let executions = 0;
   const base = { provider: 'gemini', allowedFolders: [] as string[], signal: new AbortController().signal, execute: async () => { executions++; return { status: 'completed' as const }; }, onCard() {} };
-  await assert.rejects(runToolLoop({ ...base, next: async () => ({ calls: [read('1')] }) }), /not offered/);
+  let attempts=0; await runToolLoop({ ...base, next: async () => attempts++ ? ({text:'Done'}) : ({ calls: [read('1')] }) }); assert.equal(executions,0);
   await assert.rejects(runToolLoop({ ...base, allowedFolders: folders, next: async () => ({ calls: [read('same'), read('same')] }) }), /duplicate/);
   assert.equal(executions, 1);
   const abort = new AbortController(); abort.abort();

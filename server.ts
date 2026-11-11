@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import type { Server } from 'http';
 import { randomUUID } from 'node:crypto';
 import { getFreeOpenRouterModels, openRouterSupportsTools, openRouterSupportsImages } from './server/openrouter';
+import { executeWeb } from './server/web-tools';
 import { runToolModel } from './server/model-tools';
 import { AGENT_SYSTEM_PROMPTS } from './server/prompts';
 import { GoogleGenAI } from '@google/genai';
@@ -777,7 +778,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
   if (process.env.MEXAI_SECURE_KEYS === '1' && keyPort) {
     try { const result = await desktopTool('list'); if (Array.isArray(result)) allowedFolders = result.filter(item => typeof item === 'string'); } catch { /* tools unavailable; ordinary chat still works */ }
   }
-  const toolDeadline = allowedFolders.length ? AbortSignal.timeout(600_000) : undefined;
+  const toolDeadline = AbortSignal.timeout(600_000);
   const retried = new Set<string>();
   for (let index = 0; index < candidates.length && !disconnect.signal.aborted; index++) {
     const candidate = candidates[index];
@@ -794,20 +795,20 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
         throw new Error('Missing API key. Add it in Settings.');
       }
       let pending = '';
-      const timeout = candidateTimeout = allowedFolders.length && (candidate.provider === 'gemini' || candidate.provider === 'openrouter') ? toolDeadline! : AbortSignal.timeout(120_000);
+      const timeout = candidateTimeout = (candidate.provider === 'gemini' || candidate.provider === 'openrouter') ? toolDeadline : AbortSignal.timeout(120_000);
       const signal = AbortSignal.any([disconnect.signal, timeout]);
       let toolCapable = candidate.provider === 'gemini';
-      if (allowedFolders.length && candidate.provider === 'openrouter') {
+      if (candidate.provider === 'openrouter') {
         try { toolCapable = await openRouterSupportsTools(candidate.model); } catch { toolCapable = false; }
       }
-      if (allowedFolders.length && toolCapable && (candidate.provider === 'gemini' || candidate.provider === 'openrouter')) {
+      if (toolCapable && (candidate.provider === 'gemini' || candidate.provider === 'openrouter')) {
         send({ answeringModel: { provider: candidate.provider, model: candidate.model } });
         const text = await runToolModel({ provider:candidate.provider, model:candidate.model, key, messages:messages || [], system:systemInstruction, folders:allowedFolders, signal, supportsImages: candidate.provider === 'gemini' || await openRouterSupportsImages(candidate.model).catch(() => false),
           onProgress: message => send({ progress:message }),
           onCard: card => { performedTool = true; send({ toolCard: redactValue(card, key) }); },
-          execute: async (call, signal) => desktopTool('execute', call, signal),
+          execute: async (call, signal) => call.name === 'fetch_webpage' || call.name === 'web_search' ? executeWeb(call, signal) : desktopTool('execute', call, signal),
           executeBatch: async (calls, signal) => desktopTool('execute-batch', calls, signal),
-          onRejected: async (call, reason) => { await desktopTool('rejected', { name: call.name, reason }, signal); },
+          onRejected: async (call, reason) => { if (keyPort && !['fetch_webpage','web_search'].includes(call.name)) await desktopTool('rejected', { name: call.name, reason }, signal); },
         });
         if (disconnect.signal.aborted) break;
         if (!text.trim()) throw new Error('Empty response.');
