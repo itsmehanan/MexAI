@@ -34,3 +34,18 @@ test('cancelling an approval cannot write a file', async () => {
  try { const pending=run({name:'write_file',arguments:{folder:root,path:'cancelled.txt',content:'x'}},abort.signal); await ready; abort.abort(); const result=await pending; assert.equal(result.status,'failed'); await assert.rejects(fs.stat(path.join(root,'cancelled.txt'))); }
  finally { await fs.rm(dir,{recursive:true,force:true}); }
 });
+
+test('view_image enforces formats and size, scales and returns private image data', async () => {
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'mexai-img-')); const root=path.join(dir,'root'); await fs.mkdir(root);
+ let resize;
+ const nativeImage={createFromBuffer:()=>({isEmpty:()=>false,getSize:()=>({width:1600,height:800}),resize:opts=>{resize=opts;return {getSize:()=>({width:opts.width,height:opts.height}),toPNG:()=>Buffer.from('small image')};}})};
+ const run=createFileTools({folders:async()=>[root],logFile:path.join(dir,'log'),approve:async()=> 'deny',trash:async()=>{},nativeImage});
+ try {
+  await fs.writeFile(path.join(root,'x.png'),Buffer.from([137,80,78,71,13,10,26,10,0]));
+  const ok=await run({name:'view_image',arguments:{folder:root,path:'x.png'}});
+  assert.equal(ok.status,'completed'); assert.equal(resize.width,768); assert.equal(resize.height,384); assert.equal(ok.image.data,Buffer.from('small image').toString('base64'));
+  await fs.writeFile(path.join(root,'bad.png'),'not png'); assert.equal((await run({name:'view_image',arguments:{folder:root,path:'bad.png'}})).status,'failed');
+  await fs.writeFile(path.join(root,'large.png'),Buffer.alloc(10*1024*1024+1)); assert.equal((await run({name:'view_image',arguments:{folder:root,path:'large.png'}})).status,'failed');
+  assert(!(await fs.readFile(path.join(dir,'log'),'utf8')).includes(ok.image.data));
+ } finally {await fs.rm(dir,{recursive:true,force:true});}
+});

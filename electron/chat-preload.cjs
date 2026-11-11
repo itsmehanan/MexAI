@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('islandChat', {
 
 contextBridge.exposeInMainWorld('toolApprovals', {
   current: () => ipcRenderer.invoke('tools:approval-current'),
+  undoRenames: () => ipcRenderer.invoke('tools:undo-renames'),
   onApproval: callback => { const listener = (_event, request) => callback(request); ipcRenderer.on('tools:approval', listener); return () => ipcRenderer.removeListener('tools:approval', listener); },
   decide: (id, choice) => ipcRenderer.send('tools:decision', id, choice),
 });

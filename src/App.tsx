@@ -136,6 +136,8 @@ export default function App() {
     return DEFAULT_SETTINGS;
   });
 
+  const [undoMessage, setUndoMessage] = useState('');
+  const [undoBusy, setUndoBusy] = useState(false);
   const [toolApproval, setToolApproval] = useState<ToolApproval | null>(null);
   useEffect(() => {
     if (!window.toolApprovals) return;
@@ -427,6 +429,8 @@ export default function App() {
                 setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => m.id === assistantPlaceholderId ? { ...m, content: '', provider: undefined, model: undefined } : m) }));
               } else if (data.answeringModel) {
                 setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => m.id === assistantPlaceholderId ? { ...m, provider: data.answeringModel.provider, model: data.answeringModel.model } : m) }));
+              } else if (data.progress) {
+                setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => m.id === assistantPlaceholderId ? { ...m, progress: String(data.progress) } : m) }));
               } else if (data.toolCard) {
                 setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => {
                   if (m.id !== assistantPlaceholderId) return m;
@@ -503,7 +507,7 @@ export default function App() {
         ...prev,
         [targetAgent]: prev[targetAgent].map((m) =>
           m.id === assistantPlaceholderId
-            ? { ...m, content: accumulatedText, status: 'complete' }
+            ? { ...m, content: accumulatedText, progress: undefined, status: 'complete' }
             : m
         ),
       }));
@@ -524,7 +528,9 @@ export default function App() {
             m.id === assistantPlaceholderId
               ? {
                   ...m,
-                  content: m.content || '(Generation stopped by user)',
+                  content: `${m.content}${m.content ? '\n\n' : ''}(Stopped by user. Some actions may already have completed; check the tool cards and undo log.)`,
+                  progress: undefined,
+                  toolCards: m.toolCards?.map(card => card.status === 'running' ? { ...card, status:'cancelled', error:'Stopped; some actions may already have completed. Check the undo log.' } : card),
                   status: 'complete',
                 }
               : m
@@ -542,6 +548,8 @@ export default function App() {
               ? {
                   ...m,
                   content: errorMsg,
+                  progress: undefined,
+                  toolCards: m.toolCards?.map(card => card.status === 'running' ? { ...card, status:'failed', error:'Request ended; some actions may already have completed. Check the undo log.' } : card),
                   status: 'error',
                   error: errorMsg,
                 }
@@ -696,9 +704,10 @@ export default function App() {
       {toolApproval && <div className="fixed inset-0 z-[100] bg-black/75 flex items-center justify-center p-5" role="alertdialog" aria-modal="true" aria-labelledby="approval-title">
         <div className="w-full max-w-2xl max-h-[85vh] overflow-auto rounded-2xl border border-cyan-300/30 bg-[#11182a] p-5 text-white shadow-2xl">
           <h2 id="approval-title" className="text-lg font-bold">Approve file action: {toolApproval.name}</h2>
-          <p className="text-sm text-slate-300 mt-2">{toolApproval.name === 'delete_file' ? 'Move this file to the Recycle Bin.' : toolApproval.name === 'move_file' ? 'Move this file to the destination.' : toolApproval.overwrite ? 'Replace the existing file with this exact content.' : 'Create this file with this exact content.'}</p>
-          <pre className="mt-3 max-h-[48vh] overflow-auto rounded-xl bg-black/30 p-3 text-xs whitespace-pre-wrap break-all select-text">{JSON.stringify({ source:toolApproval.source, ...(toolApproval.destination ? {destination:toolApproval.destination} : {}), ...toolApproval.arguments }, null, 2)}</pre>
-          <div className="mt-4 flex flex-wrap gap-2">{([['approve','Approve'],['deny','Deny'],['always','Always allow this kind of action in this folder']] as const).map(([choice,label]) => <button key={choice} type="button" onClick={() => window.toolApprovals?.decide(toolApproval.id, choice)} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/20">{label}</button>)}</div>
+          <p className="text-sm text-slate-300 mt-2">{toolApproval.name === 'rename_folder_batch' ? `Rename ${toolApproval.renames?.length || 0} folders in one batch.` : toolApproval.name === 'delete_file' ? 'Move this file to the Recycle Bin.' : toolApproval.name === 'move_file' ? 'Move this file to the destination.' : toolApproval.overwrite ? 'Replace the existing file with this exact content.' : 'Create this file with this exact content.'}</p>
+          <pre className="mt-3 max-h-[48vh] overflow-auto rounded-xl bg-black/30 p-3 text-xs whitespace-pre-wrap break-all select-text">{toolApproval.name === 'rename_folder_batch' ? toolApproval.renames?.map(r => `${r.source} → ${r.destination}`).join('\n') : JSON.stringify({ source:toolApproval.source, ...(toolApproval.destination ? {destination:toolApproval.destination} : {}), ...toolApproval.arguments }, null, 2)}</pre>
+          <div className="mt-4 flex flex-wrap gap-2">{([['approve',toolApproval.name === 'rename_folder_batch' ? 'Approve all' : 'Approve'],['deny','Deny'],['always',toolApproval.name === 'rename_folder_batch' ? 'Always allow renames in these parent folders' : 'Always allow this kind of action in this folder']] as const).map(([choice,label]) => <button key={choice} type="button" onClick={() => window.toolApprovals?.decide(toolApproval.id, choice)} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/20">{label}</button>)}</div>
+          <button type="button" onClick={handleStopGeneration} className="mt-3 text-xs text-rose-300 underline">Stop request</button>
           {toolApproval.name === 'move_file' && <p className="mt-2 text-xs text-slate-400">Always allow applies to this action and this source/destination folder pair.</p>}
         </div>
       </div>}
@@ -734,12 +743,14 @@ export default function App() {
           <div className="chat-heading">
             <div className="chat-heading-title"><Avatar agentId={activeAgentId} size="md" status={activeCharacterStatus} /><div><span className="eyebrow">YOUR CONVERSATION</span><h1>Chat with {activeAgent.name} <span className="heading-dot">✳</span></h1><p>{isHanex ? 'A little clarity, whenever you need it.' : 'A little inspiration, whenever you need it.'}</p></div></div>
             <div className="heading-actions">
+              {window.toolApprovals && <button type="button" disabled={undoBusy || isGenerating} title="Undo last rename batch" onClick={async () => { setUndoBusy(true); setUndoMessage(''); try { const result = await window.toolApprovals!.undoRenames(); setUndoMessage(`Undid ${result.count} folder rename(s).`); } catch (e: any) { setUndoMessage(e?.message || 'Undo failed.'); } finally { setUndoBusy(false); } }} className="text-xs rounded-xl bg-white/10 px-3 py-2 disabled:opacity-50">Undo last batch</button>}
               <button onClick={() => { const prompt = activeAgent.suggestedPrompts[Math.floor(Math.random() * activeAgent.suggestedPrompts.length)]; handleSendMessage(prompt.prompt); }} disabled={isGenerating} title="Send a random prompt starter" aria-label="Send a random prompt starter"><Sparkles size={17} /></button>
               <button onClick={() => handleExportChat(activeAgentId)} title="Export chat history" aria-label="Export chat history"><Download size={17} /></button>
               <button onClick={() => handleClearChat(activeAgentId)} title="Clear this conversation" aria-label="Clear this conversation"><Trash2 size={17} /></button>
             </div>
           </div>
 
+          {undoMessage && <p role="status" className="px-5 py-2 text-xs text-cyan-200">{undoMessage}</p>}
           {/* Missing Key Banner Notice if currently selected provider lacks a key */}
           {isCurrentProviderKeyMissing && (
             <div className="mx-4 mt-3 p-3 rounded-2xl bg-amber-950/30 border border-amber-500/30 flex items-center justify-between gap-3 text-xs text-amber-200">

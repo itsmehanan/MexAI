@@ -32,7 +32,7 @@ async function checked(folder, input, allowMissing = false, rootAllowed = false)
   if (!inside(actualRoot, actual)) throw new Error('Path is outside the allowed folder.');
   return actual;
 }
-function createFileTools({ folders, logFile, approve, trash }) {
+function createFileTools({ folders, logFile, approve, trash, nativeImage }) {
   const audit = async record => { await fs.mkdir(path.dirname(logFile), { recursive: true }); await fs.appendFile(logFile, `${JSON.stringify({ timestamp: new Date().toISOString(), ...record })}\n`, { mode: 0o600 }); };
   async function execute(call, signal) {
     const cancelled = () => { if (signal?.aborted) throw new Error('Tool request cancelled.'); };
@@ -41,7 +41,7 @@ function createFileTools({ folders, logFile, approve, trash }) {
     await audit({ id, event: 'requested', name, arguments: safeArgs });
     try {
       cancelled();
-      const definitions = { read_file: ['folder','path'], list_folder: ['folder','path'], search_files: ['folder','path','query'], write_file: ['folder','path','content'], move_file: ['source_folder','source_path','destination_folder','destination_path'], delete_file: ['folder','path'] };
+      const definitions = { view_image: ['folder','path'], read_file: ['folder','path'], list_folder: ['folder','path'], search_files: ['folder','path','query'], write_file: ['folder','path','content'], move_file: ['source_folder','source_path','destination_folder','destination_path'], delete_file: ['folder','path'] };
       const keys = definitions[name];
       if (!keys || !args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length !== keys.length || keys.some(k => typeof args[k] !== 'string' || args[k].includes('\0'))) throw new Error('Invalid tool arguments.');
       const allowed = await folders();
@@ -78,7 +78,23 @@ function createFileTools({ folders, logFile, approve, trash }) {
         return { status: 'completed', result: { message: name === 'delete_file' ? 'Moved to Recycle Bin.' : 'Completed.' } };
       }
       let result;
-      if (name === 'read_file') {
+      if (name === 'view_image') {
+        const ext = path.extname(args.path).toLowerCase();
+        if (!['.png','.jpg','.jpeg','.webp'].includes(ext)) throw new Error('Only PNG, JPG and WebP images are supported.');
+        if (!nativeImage) throw new Error('Image processing is unavailable.');
+        const file = await fs.open(await target(), 'r'); let bytes;
+        try { const stat = await file.stat(); if (!stat.isFile() || stat.size > 10 * 1024 * 1024) throw new Error('Image must be a regular file no larger than 10 MB.'); const buffer=Buffer.alloc(10 * 1024 * 1024 + 1); const {bytesRead}=await file.read(buffer,0,buffer.length,0); if (bytesRead > 10 * 1024 * 1024) throw new Error('Image exceeds 10 MB.'); bytes=buffer.subarray(0,bytesRead); } finally { await file.close(); }
+        const png = bytes.length >= 8 && bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
+        const jpg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+        const webp = bytes.length >= 12 && bytes.toString('ascii',0,4) === 'RIFF' && bytes.toString('ascii',8,12) === 'WEBP';
+        if (!(ext === '.png' && png || ['.jpg','.jpeg'].includes(ext) && jpg || ext === '.webp' && webp)) throw new Error('Image format does not match its extension.');
+        const image = nativeImage.createFromBuffer(bytes); if (image.isEmpty()) throw new Error('Could not decode image.');
+        const size = image.getSize(), scale = Math.min(1, 768 / Math.max(size.width, size.height));
+        const resized = scale < 1 ? image.resize({ width:Math.max(1,Math.round(size.width*scale)), height:Math.max(1,Math.round(size.height*scale)), quality:'good' }) : image;
+        const dimensions = resized.getSize(); const data = resized.toPNG().toString('base64');
+        await audit({ id, event:'completed', name });
+        return { status:'completed', result:{ path:args.path, width:dimensions.width, height:dimensions.height }, image:{ mimeType:'image/png', data } };
+      } else if (name === 'read_file') {
         const file = await fs.open(await target(), 'r');
         try { const stat = await file.stat(); if (!stat.isFile() || stat.size > MAX) throw new Error('Not a regular file or file exceeds 256 KiB.'); const buf = Buffer.alloc(MAX + 1); const { bytesRead } = await file.read(buf, 0, buf.length, 0); if (bytesRead > MAX) throw new Error('File exceeds 256 KiB.'); result = { path: args.path, content: new TextDecoder('utf-8', { fatal:true }).decode(buf.subarray(0,bytesRead)) }; } finally { await file.close(); }
       } else if (name === 'list_folder') {

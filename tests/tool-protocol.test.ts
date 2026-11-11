@@ -7,15 +7,15 @@ const read = (id: string) => ({ id, name: 'read_file', arguments: { folder: fold
 
 test('definitions are offered only for configured folders and verified provider capabilities', () => {
   assert.deepEqual(TOOL_DEFINITIONS.map(tool => [tool.name, tool.risk]), [
-    ['read_file', 'safe'], ['list_folder', 'safe'], ['search_files', 'safe'],
+    ['rename_folder', 'approval'], ['view_image', 'safe'], ['read_file', 'safe'], ['list_folder', 'safe'], ['search_files', 'safe'],
     ['write_file', 'approval'], ['move_file', 'approval'], ['delete_file', 'approval'],
   ]);
   assert.equal(offeredTools('gemini', []).length, 0);
   assert.equal(offeredTools('openrouter', folders, false).length, 0);
-  assert.equal(offeredTools('openrouter', folders, true).length, 6);
+  assert.equal(offeredTools('openrouter', folders, true).length, 8);
   assert.equal(offeredTools('openai', folders, true).length, 0);
   assert.equal(geminiToolDeclarations(TOOL_DEFINITIONS)[0].parametersJsonSchema.type, 'object');
-  assert.equal(openRouterToolDeclarations(TOOL_DEFINITIONS)[0].function.name, 'read_file');
+  assert.equal(openRouterToolDeclarations(TOOL_DEFINITIONS)[0].function.name, 'rename_folder');
 });
 
 test('tool arguments reject traversal, absolute and unapproved folders', () => {
@@ -32,7 +32,7 @@ test('tool arguments reject traversal, absolute and unapproved folders', () => {
 test('multiple calls produce cards and results in order without retrying actions', async () => {
   const cards: string[] = []; let round = 0, executions = 0;
   const result = await runToolLoop({ provider: 'gemini', allowedFolders: folders, signal: new AbortController().signal,
-    next: async (history, offered) => { assert.equal(offered.length, 6); if (round++ === 0) return { calls: [read('1'), read('2')] }; assert.equal(history.length, 3); return { text: 'Done.' }; },
+    next: async (history, offered) => { assert.equal(offered.length, 8); if (round++ === 0) return { calls: [read('1'), read('2')] }; assert.equal(history.length, 3); return { text: 'Done.' }; },
     execute: async call => { executions++; return call.id === '1' ? { status: 'completed', result: 'ok' } : { status: 'denied', error: 'Denied.' }; },
     onCard: card => cards.push(`${card.id}:${card.status}`),
   });
@@ -40,13 +40,13 @@ test('multiple calls produce cards and results in order without retrying actions
   assert.deepEqual(cards, ['1:running', '1:completed', '2:running', '2:denied']);
 });
 
-test('calls are capped at 15 and tools are removed on the final turn', async () => {
+test('calls are capped at 60 and tools are removed on the final turn', async () => {
   let calls = 0; let finalHadTools = true;
   const result = await runToolLoop({ provider: 'gemini', allowedFolders: folders, signal: new AbortController().signal,
-    next: async (_history, offered) => { if (calls === 15) { finalHadTools = !!offered.length; return { text: 'Stopped.' }; } return { calls: [read(String(calls))] }; },
+    next: async (_history, offered) => { if (calls === 60) { finalHadTools = !!offered.length; return { text: 'Stopped.' }; } return { calls: [read(String(calls))] }; },
     execute: async () => { calls++; return { status: 'completed' }; }, onCard() {},
   });
-  assert.equal(calls, 15); assert.equal(finalHadTools, false); assert.equal(result.limitReached, true);
+  assert.equal(calls, 60); assert.equal(finalHadTools, false); assert.equal(result.limitReached, true);
 });
 
 test('unoffered, duplicate and cancelled tool calls cannot run', async () => {
@@ -56,17 +56,17 @@ test('unoffered, duplicate and cancelled tool calls cannot run', async () => {
   await assert.rejects(runToolLoop({ ...base, allowedFolders: folders, next: async () => ({ calls: [read('same'), read('same')] }) }), /duplicate/);
   assert.equal(executions, 1);
   const abort = new AbortController(); abort.abort();
-  await assert.rejects(runToolLoop({ ...base, signal: abort.signal, next: async () => ({ text: 'no' }) }), /cancelled/);
+  await assert.rejects(runToolLoop({ ...base, signal: abort.signal, next: async () => ({ text: 'no' }) }), /abort|cancel/i);
 });
 
 
 test('excess calls in a single model response are shown as failed without execution', async () => {
   const cards: any[] = []; let count = 0;
   const result = await runToolLoop({ provider:'gemini', allowedFolders:folders, signal:new AbortController().signal,
-    next:async () => ({ calls:Array.from({length:17},(_,i)=>read(String(i))) }),
+    next:async () => ({ calls:Array.from({length:62},(_,i)=>read(String(i))) }),
     execute:async () => { count++; return {status:'completed'}; }, onCard: card => cards.push(card),
   });
-  assert.equal(count,15); assert.equal(result.limitReached,true);
+  assert.equal(count,60); assert.equal(result.limitReached,true);
   assert.equal(cards.filter(c=>c.status==='failed').length,2);
 });
 
@@ -77,4 +77,18 @@ test('invalid model calls are recorded as failed without reaching the executor',
     execute:async () => { executed=true; return {status:'completed'}; }, onCard:card=>cards.push(card), onRejected:async (_call, reason)=>{rejected.push(reason);},
   });
   assert.equal(executed,false); assert.equal(cards.at(-1).status,'failed'); assert.equal(rejected.length,1); assert.equal(output.text,'Cannot access that path.');
+});
+
+test('rename calls in one turn are approved as one batch and card results stay separate', async () => {
+ const calls=['one','two'].map((name,i)=>({id:String(i),name:'rename_folder',arguments:{folder:folders[0],path:name,new_name:`snoopy ${i+1}`}}));
+ let round=0,batches=0; const cards:any[]=[];
+ const result=await runToolLoop({provider:'gemini',allowedFolders:folders,signal:new AbortController().signal,next:async()=>round++ ? {text:'Done'} : {calls},execute:async()=>{throw Error('not used');},executeBatch:async batch=>{batches++;assert.equal(batch.length,2);return batch.map(()=>({status:'completed'}));},onCard:c=>cards.push(c)});
+ assert.equal(result.text,'Done');assert.equal(batches,1);assert.deepEqual(cards.map(c=>c.status),['running','running','completed','completed']);
+});
+
+test('image data never goes to cards and vision support controls tool offering', async () => {
+ let round=0;const cards:any[]=[];
+ await runToolLoop({provider:'openrouter',openRouterSupportsTools:true,supportsImages:true,allowedFolders:folders,signal:new AbortController().signal,next:async()=>round++ ? {text:'Done'} : {calls:[{id:'img',name:'view_image',arguments:{folder:folders[0],path:'a.png'}}]},execute:async()=>({status:'completed',result:{width:100,height:100},image:{mimeType:'image/png',data:'SENSITIVE_IMAGE'}}),onCard:c=>cards.push(c)});
+ assert(!JSON.stringify(cards).includes('SENSITIVE_IMAGE'));
+ round=0; await runToolLoop({provider:'openrouter',openRouterSupportsTools:true,supportsImages:false,allowedFolders:folders,signal:new AbortController().signal,next:async(_h,tools)=>{assert(!tools.some(t=>t.name==='view_image')); return {text:'Done'};},execute:async()=>{throw Error('unexpected');},onCard:()=>{}});
 });

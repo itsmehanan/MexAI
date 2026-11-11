@@ -117,6 +117,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
             </span>
           </div>
 
+          {message.progress && message.status === 'streaming' && <p role="status" className="mb-2 text-xs text-cyan-200">{message.progress}</p>}
           {message.toolCards?.map(card => <div key={card.id} className="mb-2 rounded-xl border border-white/10 bg-slate-900/70 p-3 text-xs text-slate-200">
             <div className="flex justify-between gap-3"><strong>{card.name}</strong><span className="text-cyan-300">{card.status}</span></div>
             <pre className="mt-2 whitespace-pre-wrap break-all text-slate-400">{JSON.stringify(card.arguments, null, 2)}</pre>

@@ -1,3 +1,4 @@
+const { createRenames } = require('./rename-tools.cjs');
 const { createApprovals } = require('./approvals.cjs');
 const { createFileTools } = require('./file-tools.cjs');
 const { createFolderSettings } = require('./folder-settings.cjs');
@@ -295,7 +296,9 @@ async function startDesktop() {
   });
   serverProcess = child;
   const activeTools = new Map();
-  const fileTools = createFileTools({ folders: () => folderSettings.list(), logFile: path.join(app.getPath('userData'), 'tool-activity.jsonl'), approve: (request, signal) => approvals.request(request, signal), trash: p => shell.trashItem(p) });
+  const renames = createRenames({ folders:() => folderSettings.list(), approve:(request, signal) => approvals.request(request, signal), logFile:path.join(app.getPath('userData'), 'rename-undo.jsonl') });
+  ipcMain.handle('tools:undo-renames', event => { if (!trustedChat(event)) throw new Error('Unauthorized undo request.'); return renames.undo(); });
+  const fileTools = createFileTools({ folders: () => folderSettings.list(), logFile: path.join(app.getPath('userData'), 'tool-activity.jsonl'), nativeImage, approve: (request, signal) => approvals.request(request, signal), trash: p => shell.trashItem(p) });
   // The utility process asks the main process directly; decrypted keys never travel to the renderer.
   child.on('message', message => {
     if (message?.type === 'tool-cancel' && typeof message.id === 'string') { activeTools.get(message.id)?.abort(); return; }
@@ -303,8 +306,9 @@ async function startDesktop() {
       const controller = new AbortController(); activeTools.set(message.id, controller);
       Promise.resolve().then(async () => {
         if (message.action === 'list') return folderSettings.list();
+        if (message.action === 'execute-batch') return renames.run(message.call, controller.signal);
         if (message.action === 'rejected') return fileTools.rejected(message.call);
-        if (message.action === 'execute' && ['read_file', 'list_folder', 'search_files', 'write_file', 'move_file', 'delete_file'].includes(message.call?.name)) return fileTools(message.call, controller.signal);
+        if (message.action === 'execute' && ['view_image', 'read_file', 'list_folder', 'search_files', 'write_file', 'move_file', 'delete_file'].includes(message.call?.name)) return fileTools(message.call, controller.signal);
         throw new Error('Tool is unavailable.');
       }).then(value => child.postMessage({ type: 'tool-response', id: message.id, value }), () => child.postMessage({ type: 'tool-response', id: message.id, error: 'Tool service failed.' })).finally(() => activeTools.delete(message.id));
       return;

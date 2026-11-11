@@ -86,6 +86,14 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
  assert.equal(serverKey.value.status,'completed'); assert.equal(fs.readFileSync(path.join(allowedFolder,'island.txt'),'utf8'),'island');
  child.emit('message', { type:'tool-request', id:'always-write', action:'execute', call:{name:'write_file',arguments:{folder:fs.realpathSync(allowedFolder),path:'second.txt',content:'auto'}} }); await wait(30);
  assert.equal(serverKey.value.status,'completed'); assert.equal(handlers['tools:approval-current'](trusted),null);
+ const folder = fs.realpathSync(allowedFolder); fs.mkdirSync(path.join(folder,'design1')); fs.mkdirSync(path.join(folder,'design2'));
+ const batch = ['design1','design2'].map((old,i)=>({id:`rename-${i}`,name:'rename_folder',arguments:{folder,path:old,new_name:`snoopy ${i+1}`}}));
+ child.emit('message',{type:'tool-request',id:'rename-batch',action:'execute-batch',call:batch}); await wait(50);
+ const renameApproval=handlers['tools:approval-current'](trusted); assert.equal(renameApproval.name,'rename_folder_batch'); assert.equal(renameApproval.renames.length,2);
+ ipcMain.emit('island:decision',islandEvent,'approve',renameApproval.id); await wait(80);
+ assert.equal(serverKey.value[0].status,'completed'); assert(fs.existsSync(path.join(folder,'snoopy 1')));
+ const undone = await handlers['tools:undo-renames'](trusted); assert.equal(undone.count,2); assert(fs.existsSync(path.join(folder,'design1')));
+
  tray.menu[1].submenu[0].click(); await wait(260);
 
  ipcMain.emit('island:expand', { sender: island.webContents, senderFrame: {} }); await wait(20); assert.equal(island.bounds.width,132);

@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import type { Server } from 'http';
 import { randomUUID } from 'node:crypto';
-import { getFreeOpenRouterModels, openRouterSupportsTools } from './server/openrouter';
+import { getFreeOpenRouterModels, openRouterSupportsTools, openRouterSupportsImages } from './server/openrouter';
 import { runToolModel } from './server/model-tools';
 import { AGENT_SYSTEM_PROMPTS } from './server/prompts';
 import { GoogleGenAI } from '@google/genai';
@@ -57,7 +57,7 @@ async function desktopTool(action: string, call?: unknown, signal?: AbortSignal)
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Tool request cancelled.')); return; }
     const cancel = () => { keyPort.postMessage({ type:'tool-cancel', id }); pendingTools.delete(id); clearTimeout(timer); reject(new Error('Tool request cancelled.')); };
-    const timer = setTimeout(() => { keyPort.postMessage({ type:'tool-cancel', id }); pendingTools.delete(id); signal?.removeEventListener('abort', cancel); reject(new Error('Tool service timed out.')); }, 180_000);
+    const timer = setTimeout(() => { keyPort.postMessage({ type:'tool-cancel', id }); pendingTools.delete(id); signal?.removeEventListener('abort', cancel); reject(new Error('Tool service timed out.')); }, action === 'list' ? 10_000 : 600_000);
     signal?.addEventListener('abort', cancel, { once:true });
     pendingTools.set(id, { resolve: value => { signal?.removeEventListener('abort', cancel); resolve(value); }, reject: error => { signal?.removeEventListener('abort', cancel); reject(error); }, timer });
     keyPort.postMessage({ type: 'tool-request', id, action, call });
@@ -777,6 +777,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
   if (process.env.MEXAI_SECURE_KEYS === '1' && keyPort) {
     try { const result = await desktopTool('list'); if (Array.isArray(result)) allowedFolders = result.filter(item => typeof item === 'string'); } catch { /* tools unavailable; ordinary chat still works */ }
   }
+  const toolDeadline = allowedFolders.length ? AbortSignal.timeout(600_000) : undefined;
   const retried = new Set<string>();
   for (let index = 0; index < candidates.length && !disconnect.signal.aborted; index++) {
     const candidate = candidates[index];
@@ -784,6 +785,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
     let key = '';
     let reason = '';
     let committed = false;
+    let candidateTimeout: AbortSignal | undefined;
     try {
       if (!supported.has(candidate.provider)) throw new Error('Unsupported provider.');
       key = await resolveApiKey(candidate.provider, candidate.providerConfig.apiKey);
@@ -792,16 +794,19 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
         throw new Error('Missing API key. Add it in Settings.');
       }
       let pending = '';
-      const signal = AbortSignal.any([disconnect.signal, AbortSignal.timeout(120_000)]);
+      const timeout = candidateTimeout = allowedFolders.length && (candidate.provider === 'gemini' || candidate.provider === 'openrouter') ? toolDeadline! : AbortSignal.timeout(120_000);
+      const signal = AbortSignal.any([disconnect.signal, timeout]);
       let toolCapable = candidate.provider === 'gemini';
       if (allowedFolders.length && candidate.provider === 'openrouter') {
         try { toolCapable = await openRouterSupportsTools(candidate.model); } catch { toolCapable = false; }
       }
       if (allowedFolders.length && toolCapable && (candidate.provider === 'gemini' || candidate.provider === 'openrouter')) {
         send({ answeringModel: { provider: candidate.provider, model: candidate.model } });
-        const text = await runToolModel({ provider:candidate.provider, model:candidate.model, key, messages:messages || [], system:systemInstruction, folders:allowedFolders, signal,
+        const text = await runToolModel({ provider:candidate.provider, model:candidate.model, key, messages:messages || [], system:systemInstruction, folders:allowedFolders, signal, supportsImages: candidate.provider === 'gemini' || await openRouterSupportsImages(candidate.model).catch(() => false),
+          onProgress: message => send({ progress:message }),
           onCard: card => { performedTool = true; send({ toolCard: redactValue(card, key) }); },
           execute: async (call, signal) => desktopTool('execute', call, signal),
+          executeBatch: async (calls, signal) => desktopTool('execute-batch', calls, signal),
           onRejected: async (call, reason) => { await desktopTool('rejected', { name: call.name, reason }, signal); },
         });
         if (disconnect.signal.aborted) break;
@@ -832,7 +837,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
       if (!status && typeof error?.message === 'string') {
         try { status = Number(JSON.parse(error.message)?.error?.code); } catch { /* Not a JSON provider error. */ }
       }
-      const detail = formatErrorMessage(error, key).replace(/\s+/g, ' ').slice(0, 300) || 'Request failed.';
+      const detail = (candidateTimeout?.aborted || error?.name === 'TimeoutError' ? 'Request timed out.' : error?.name === 'AbortError' ? 'The provider aborted the request.' : formatErrorMessage(error, key)).replace(/\s+/g, ' ').slice(0, 300) || 'Request failed.';
       reason = Number.isInteger(status) && status >= 400 && status <= 599 ? `HTTP ${status}: ${detail}` : detail;
       if (isCredentialError(error)) stoppedForKey = true;
       tried.push(`${label}: ${reason}`);
@@ -840,7 +845,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
       // Preserve the single retry for transient throttling, overload and empty replies.
       const retryId = `${candidate.provider}:${candidate.model}`;
       const transient = status === 429 || status === 503 || detail === 'Empty response.';
-      if (!stoppedForKey && !committed && transient && !retried.has(retryId)) {
+      if (!stoppedForKey && !committed && !performedTool && transient && !retried.has(retryId)) {
         retried.add(retryId);
         candidates.splice(index + 1, 0, candidate);
         continue;
