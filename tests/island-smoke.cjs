@@ -25,8 +25,11 @@ let cursor = { x: 500, y: 30 };
 let unregistered = false;
 const safeStorage = { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'gnome_libsecret', encryptString: s => Buffer.from(s), decryptString: b => b.toString() };
 const electron = { app, BrowserWindow:Window, Tray, ipcMain, safeStorage, shell:{trashItem:async p=>fs.promises.unlink(p)}, Menu:{buildFromTemplate:t=>t}, nativeImage:{createFromPath:()=>({isEmpty:()=>false})}, globalShortcut:{register:(key,cb)=>{assert.equal(key,'Control+Shift+Space');shortcut=cb;return true;},unregisterAll:()=>{unregistered=true;}}, screen:{getPrimaryDisplay:()=>({workArea:{x:0,y:0,width:1200,height:800}}),getAllDisplays:()=>[{workArea:{x:0,y:0,width:1200,height:800}}], getCursorScreenPoint:()=>cursor}, dialog:{showErrorBox:(_t,m)=>{throw Error(m)}}, utilityProcess:{fork:()=>{child=new EventEmitter();child.kill=()=>{child.killed=true};return child;}} };
+const mockPage={ url:()=> 'https://example.com/', isClosed:()=>false, frames:()=>[{locator:()=>({count:async()=>0})}], locator:()=>({evaluate:async()=>({content:'Hello',elements:[]})}), bringToFront:async()=>{} };
+const browserContext=Object.assign(new EventEmitter(), {pages:()=>[mockPage],close:async()=>browserContext.emit('close')});
+const playwright={chromium:{launchPersistentContext:async(profile,options)=>{assert.equal(profile,path.join(temp,'browser-profile')); assert.equal(options.headless,false); return browserContext;}}};
 const original=Module._load;
-Module._load=function(request,...args){return request==='electron'?electron:original.call(this,request,...args)};
+Module._load=function(request,...args){return request==='electron'?electron:request==='playwright-core'?playwright:original.call(this,request,...args)};
 global.fetch=async()=>({ok:true});
 require(path.join(root, 'electron/main.cjs'));
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -53,6 +56,9 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
  assert.deepEqual(serverKey.value, [fs.realpathSync(allowedFolder)]);
  child.emit('message', { type:'tool-request', id:'tools-read', action:'execute', call:{name:'read_file',arguments:{folder:fs.realpathSync(allowedFolder),path:'hello.txt'}} }); await wait(30);
  assert.equal(serverKey.value.status,'completed'); assert.equal(serverKey.value.result.content,'hello');
+ child.emit('message', {type:'tool-request',id:'tools-copy',action:'execute',call:{name:'copy_file',arguments:{source_folder:fs.realpathSync(allowedFolder),source_path:'hello.txt',destination_folder:fs.realpathSync(allowedFolder),destination_path:'copy.txt'}}}); await wait(30);
+ const copyApproval=handlers['tools:approval-current'](trusted); assert.equal(copyApproval.name,'copy_file'); ipcMain.emit('tools:decision',trusted,copyApproval.id,'approve'); await wait(30); assert.equal(serverKey.value.status,'completed'); assert.equal(fs.readFileSync(path.join(allowedFolder,'copy.txt'),'utf8'),'hello');
+
  child.emit('message', { type:'tool-request', id:'tools-write', action:'execute', call:{name:'write_file',arguments:{folder:fs.realpathSync(allowedFolder),path:'no.txt',content:'x'}} }); await wait(30);
  const approval = handlers['tools:approval-current'](trusted); assert.equal(approval.name,'write_file'); assert.equal(approval.arguments.content,'x');
  ipcMain.emit('tools:decision',trusted,approval.id,'deny'); await wait(30);
@@ -93,6 +99,13 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
  ipcMain.emit('island:decision',islandEvent,'approve',renameApproval.id); await wait(80);
  assert.equal(serverKey.value[0].status,'completed'); assert(fs.existsSync(path.join(folder,'snoopy 1')));
  const undone = await handlers['tools:undo-renames'](trusted); assert.equal(undone.count,2); assert(fs.existsSync(path.join(folder,'design1')));
+ assert.throws(()=>handlers['browser:open-manual']({sender:island.webContents}));
+ await handlers['browser:open-manual'](trusted); await handlers['browser:enable'](trusted); await wait(260);
+ assert.equal(island.visible,true); assert(island.sent.some(x=>x[0]==='island:state' && x[1]==='browser'));
+ child.emit('message',{type:'tool-request',id:'browser-read',action:'execute',call:{name:'browser_read_page',arguments:{}}}); await wait(1000);
+ assert.equal(serverKey.value.status,'completed'); assert.equal(serverKey.value.result.text,'Hello');
+ ipcMain.emit('island:browser-stop',islandEvent); await wait(80); assert(main.sent.some(x=>x[0]==='browser:stop-request'));
+
 
  tray.menu[1].submenu[0].click(); await wait(260);
 

@@ -7,15 +7,15 @@ const read = (id: string) => ({ id, name: 'read_file', arguments: { folder: fold
 
 test('definitions are offered only for configured folders and verified provider capabilities', () => {
   assert.deepEqual(TOOL_DEFINITIONS.map(tool => [tool.name, tool.risk]), [
-    ['fetch_webpage','safe'], ['web_search','safe'], ['copy_file','approval'], ['create_folder','approval'], ['rename_folder', 'approval'], ['view_image', 'safe'], ['read_file', 'safe'], ['list_folder', 'safe'], ['search_files', 'safe'],
+    ['browser_open','approval'], ['browser_read_page','safe'], ['browser_click','approval'], ['browser_type','approval'], ['browser_screenshot','safe'], ['browser_close','safe'], ['fetch_webpage','safe'], ['web_search','safe'], ['copy_file','approval'], ['create_folder','approval'], ['rename_folder', 'approval'], ['view_image', 'safe'], ['read_file', 'safe'], ['list_folder', 'safe'], ['search_files', 'safe'],
     ['write_file', 'approval'], ['move_file', 'approval'], ['delete_file', 'approval'],
   ]);
-  assert.equal(offeredTools('gemini', []).length, 2);
+  assert.equal(offeredTools('gemini', []).length, 8);
   assert.equal(offeredTools('openrouter', folders, false).length, 0);
-  assert.equal(offeredTools('openrouter', folders, true).length, 12);
+  assert.equal(offeredTools('openrouter', folders, true).length, 18);
   assert.equal(offeredTools('openai', folders, true).length, 0);
   assert.equal(geminiToolDeclarations(TOOL_DEFINITIONS)[0].parametersJsonSchema.type, 'object');
-  assert.equal(openRouterToolDeclarations(TOOL_DEFINITIONS)[0].function.name, 'fetch_webpage');
+  assert.equal(openRouterToolDeclarations(TOOL_DEFINITIONS)[0].function.name, 'browser_open');
 });
 
 test('tool arguments reject traversal, absolute and unapproved folders', () => {
@@ -91,4 +91,11 @@ test('image data never goes to cards and vision support controls tool offering',
  await runToolLoop({provider:'openrouter',openRouterSupportsTools:true,supportsImages:true,allowedFolders:folders,signal:new AbortController().signal,next:async()=>round++ ? {text:'Done'} : {calls:[{id:'img',name:'view_image',arguments:{folder:folders[0],path:'a.png'}}]},execute:async()=>({status:'completed',result:{width:100,height:100},image:{mimeType:'image/png',data:'SENSITIVE_IMAGE'}}),onCard:c=>cards.push(c)});
  assert(!JSON.stringify(cards).includes('SENSITIVE_IMAGE'));
  round=0; await runToolLoop({provider:'openrouter',openRouterSupportsTools:true,supportsImages:false,allowedFolders:folders,signal:new AbortController().signal,next:async(_h,tools)=>{assert(!tools.some(t=>t.name==='view_image')); return {text:'Done'};},execute:async()=>{throw Error('unexpected');},onCard:()=>{}});
+});
+
+test('browser tools require desktop and screenshots require vision, with safe reads and gated actions', async()=>{
+ let seen:string[]=[]; const run=async (supportsBrowser:boolean,supportsImages:boolean,readOnly=false)=>runToolLoop({provider:'gemini',allowedFolders:[],signal:new AbortController().signal,supportsBrowser,supportsImages,readOnly,next:async(_h,tools)=>{seen=tools.map(x=>x.name);return {text:'done'};},execute:async()=>({status:'completed'}),onCard:()=>{}});
+ await run(false,true); assert(!seen.includes('browser_open'));
+ await run(true,false); assert(seen.includes('browser_open')); assert(seen.includes('browser_read_page')); assert(!seen.includes('browser_screenshot'));
+ await run(true,true,true); assert(seen.includes('browser_screenshot')); assert(!seen.includes('browser_click')); assert(!seen.includes('browser_type'));
 });

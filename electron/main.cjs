@@ -1,3 +1,4 @@
+const { createBrowserTools } = require('./browser-tools.cjs');
 const { createRenames } = require('./rename-tools.cjs');
 const { createApprovals } = require('./approvals.cjs');
 const { createFileTools } = require('./file-tools.cjs');
@@ -12,7 +13,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const SERVER_PORT = 3737;
 const SERVER_HOST = '127.0.0.1';
 const APP_URL = `http://${SERVER_HOST}:${SERVER_PORT}`;
-const ISLAND_SIZES = { resting: [132, 40], listening: [260, 44], working: [380, 52], approval: [600, 300], update: [360, 52], command: [520, 102], result: [520, 102] };
+const ISLAND_SIZES = { resting: [132, 40], listening: [260, 44], working: [380, 52], approval: [600, 300], update: [360, 52], command: [520, 102], result: [520, 102], browser: [420, 52] };
 let serverProcess, serverExitError, mainWindow, islandWindow, tray;
 let quitting = false;
 let failureReported = false;
@@ -20,7 +21,7 @@ let islandState = 'resting';
 let activeIslandAgent = 'hanex';
 let sendVoiceImmediately = false;
 let islandPosition;
-let resizeTimer, saveTimer, dragOrigin, vault, updateController, approvals;
+let resizeTimer, saveTimer, dragOrigin, vault, updateController, approvals, browserTools, browserControlling = false;
 
 app.setName('Hanex & Shumex');
 app.setAppUserModelId('com.itsmehanan.hanexshumex');
@@ -91,7 +92,7 @@ function showMain() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
-  if (islandWindow && !islandWindow.isDestroyed()) { islandWindow.webContents.send('island:hidden'); islandWindow.hide(); }
+  if (islandWindow && !islandWindow.isDestroyed() && !browserControlling) { islandWindow.webContents.send('island:hidden'); islandWindow.hide(); }
 }
 function toggleMain() {
   if (mainWindow?.isVisible() && !mainWindow.isMinimized()) hideMain();
@@ -99,6 +100,7 @@ function toggleMain() {
 }
 
 function setIslandState(state) {
+  if (browserControlling && state !== 'approval') state = 'browser';
   if (state === 'resting' && updateController?.getState().status === 'ready') state = 'update';
   if (!Object.hasOwn(ISLAND_SIZES, state) || !islandWindow || islandWindow.isDestroyed()) return;
   if (islandState === state) return;
@@ -137,7 +139,7 @@ function setupIsland() {
   });
   islandWindow.setAlwaysOnTop(true, 'floating');
   islandWindow.loadFile(path.join(__dirname, 'island.html'));
-  islandWindow.webContents.on('did-finish-load', () => { islandWindow.webContents.send('island:state', islandState); islandWindow.webContents.send('island:agent', activeIslandAgent); islandWindow.webContents.send('island:voice-setting', sendVoiceImmediately); });
+  islandWindow.webContents.on('did-finish-load', () => { islandWindow.webContents.send('island:state', islandState); islandWindow.webContents.send('island:agent', activeIslandAgent); islandWindow.webContents.send('island:voice-setting', sendVoiceImmediately); islandWindow.webContents.send('island:browser-control', browserControlling); });
 }
 function validIslandFrame(event) { return validIslandSender(event) && event.senderFrame === islandWindow.webContents.mainFrame; }
 function validIslandSender(event) { return islandWindow && !islandWindow.isDestroyed() && event.sender === islandWindow.webContents; }
@@ -160,6 +162,7 @@ function setupIslandIpc() {
     }
     mainWindow.webContents.send('island-chat:command', { agent: payload.agent, text: payload.text.trim(), id: payload.id });
   });
+  ipcMain.on('island:browser-stop', event => { if (!validIslandFrame(event)) return; mainWindow?.webContents.send('browser:stop-request'); void browserTools?.stop().catch(error => console.warn('Browser stop failed:', error.message)); });
   ipcMain.on('island:restart-update', event => { if (validIslandSender(event) && event.senderFrame === islandWindow.webContents.mainFrame) updateController?.restart(); });
   ipcMain.on('island:open', event => { if (validIslandSender(event)) showMain(); });
   ipcMain.on('island:decision', (event, choice, id) => {
@@ -214,7 +217,7 @@ async function startDesktop() {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('tools:approval', request);
     if (islandWindow && !islandWindow.isDestroyed()) {
       islandWindow.webContents.send('island:approval', request);
-      setIslandState(request ? 'approval' : 'working');
+      setIslandState(request ? 'approval' : browserControlling ? 'browser' : 'working');
     }
   });
   const trustedChat = event => mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents && event.senderFrame === mainWindow.webContents.mainFrame && event.senderFrame.url.startsWith(`${APP_URL}/`);
@@ -270,7 +273,7 @@ async function startDesktop() {
     if (!trustedChat(event) || !status || !['working', 'result', 'error', 'rejected'].includes(status.phase) || !['hanex', 'shumex'].includes(status.agent) || typeof status.text !== 'string' || status.text.length > 1000 || (status.id !== undefined && (typeof status.id !== 'string' || status.id.length > 100))) return;
     if (!islandWindow || islandWindow.isDestroyed()) return;
     islandWindow.webContents.send('island:chat', status);
-    if (status.phase !== 'rejected' && !approvals.current()) setIslandState(status.phase === 'working' ? 'working' : 'result');
+    if (status.phase !== 'rejected' && !approvals.current() && !browserControlling) setIslandState(status.phase === 'working' ? 'working' : 'result');
   });
   let updater = null;
   if (app.isPackaged && process.platform === 'win32') {
@@ -296,6 +299,15 @@ async function startDesktop() {
   });
   serverProcess = child;
   const activeTools = new Map();
+  browserTools = createBrowserTools({
+    chromium: { launchPersistentContext: (...args) => (app.isPackaged ? require(path.join(process.resourcesPath, 'playwright-core')) : require('playwright-core')).chromium.launchPersistentContext(...args) },
+    profile:path.join(app.getPath('userData'),'browser-profile'), logFile:path.join(app.getPath('userData'),'browser-activity.jsonl'),
+    approve:(request,signal)=>approvals.request(request,signal),
+    onState: controlling => { browserControlling=controlling; if (quitting) return; if (islandWindow && !islandWindow.isDestroyed()) islandWindow.webContents.send('island:browser-control',controlling); if (controlling) { showIsland(); if (!approvals.current()) setIslandState('browser'); } else if (!approvals.current()) { if (mainWindow?.isVisible() && !mainWindow.isMinimized()) { setIslandState('resting'); islandWindow?.hide(); } else setIslandState('working'); } },
+  });
+  ipcMain.handle('browser:open-manual', event => { if (!trustedChat(event)) throw new Error('Unauthorized browser request.'); return browserTools.openManual(); });
+  ipcMain.handle('browser:enable', event => { if (!trustedChat(event)) throw new Error('Unauthorized browser request.'); return browserTools.enable(); });
+  ipcMain.handle('browser:stop', event => { if (!trustedChat(event)) throw new Error('Unauthorized browser request.'); return browserTools.stop(); });
   const renames = createRenames({ folders:() => folderSettings.list(), approve:(request, signal) => approvals.request(request, signal), logFile:path.join(app.getPath('userData'), 'rename-undo.jsonl') });
   ipcMain.handle('tools:undo-renames', event => { if (!trustedChat(event)) throw new Error('Unauthorized undo request.'); return renames.undo(); });
   const fileTools = createFileTools({ folders: () => folderSettings.list(), logFile: path.join(app.getPath('userData'), 'tool-activity.jsonl'), nativeImage, approve: (request, signal) => approvals.request(request, signal), trash: p => shell.trashItem(p) });
@@ -307,8 +319,9 @@ async function startDesktop() {
       Promise.resolve().then(async () => {
         if (message.action === 'list') return folderSettings.list();
         if (message.action === 'execute-batch') return renames.run(message.call, controller.signal);
-        if (message.action === 'rejected') return fileTools.rejected(message.call);
-        if (message.action === 'execute' && ['view_image', 'read_file', 'list_folder', 'search_files', 'write_file', 'move_file', 'delete_file'].includes(message.call?.name)) return fileTools(message.call, controller.signal);
+        if (message.action === 'rejected') return message.call?.name?.startsWith('browser_') ? browserTools.rejected(message.call) : fileTools.rejected(message.call);
+        if (message.action === 'execute' && ['browser_open','browser_read_page','browser_click','browser_type','browser_screenshot','browser_close'].includes(message.call?.name)) return browserTools.execute(message.call, controller.signal);
+        if (message.action === 'execute' && ['copy_file','create_folder','view_image', 'read_file', 'list_folder', 'search_files', 'write_file', 'move_file', 'delete_file'].includes(message.call?.name)) return fileTools(message.call, controller.signal);
         throw new Error('Tool is unavailable.');
       }).then(value => child.postMessage({ type: 'tool-response', id: message.id, value }), () => child.postMessage({ type: 'tool-response', id: message.id, error: 'Tool service failed.' })).finally(() => activeTools.delete(message.id));
       return;
@@ -348,6 +361,7 @@ app.on('before-quit', () => {
   clearTimeout(saveTimer);
   savePosition();
   globalShortcut.unregisterAll();
+  void browserTools?.stop().catch(error => console.warn('Browser stop failed:', error.message));
   stopServer();
 });
 // The tray owns the app lifetime; closing a window must never terminate the server.

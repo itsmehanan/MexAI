@@ -53,5 +53,7 @@ interface Window {
   }): { start(): Promise<void>; stop(): void; dispose(): void; getState(): VoicePhase } };
 }
 
-type ToolApproval = { id: string; name: string; arguments: Record<string, string>; source: string; destination?: string; overwrite: boolean; renames?: { source:string; destination:string }[] };
+type ToolApproval = { id: string; name: string; arguments: Record<string, string>; source: string; destination?: string; overwrite: boolean; oneTime?: boolean; renames?: { source:string; destination:string }[] };
 interface Window { toolApprovals?: { current(): Promise<ToolApproval | null>; undoRenames(): Promise<{count:number}>; onApproval(callback: (request: ToolApproval | null) => void): () => void; decide(id: string, choice: 'approve' | 'deny' | 'always'): void } }
+
+interface Window { browserControl?: { open(): Promise<void>; enable(): Promise<void>; stop(): Promise<void>; onStop(callback: () => void): () => void } }

@@ -12,7 +12,7 @@ test('island command, draft protection, feedback and microphone fallback', () =>
   const document = { activeElement: null, getElementById: element, querySelector: selector => element(selector === '.faces' ? 'faces' : 'working-label') };
   const calls = []; let onState, onChat, onAgent, onVoiceSetting, onApproval, voiceOptions, nextTimer = 0; const timers = new Map();
   const window = { addEventListener() {}, MexVoice: { createVoiceRecorder(options) { voiceOptions = options; return { getState: () => 'idle', start: async () => options.onError('Microphone recording is not available.'), stop() {}, dispose() {} }; } }, island: {
-    onState(cb) { onState = cb; }, onChat(cb) { onChat = cb; }, onAgent(cb) { onAgent = cb; }, onVoiceSetting(cb) { onVoiceSetting = cb; }, onApproval(cb) { onApproval = cb; }, onHidden() {},
+    onState(cb) { onState = cb; }, onChat(cb) { onChat = cb; }, onAgent(cb) { onAgent = cb; }, onVoiceSetting(cb) { onVoiceSetting = cb; }, onApproval(cb) { onApproval = cb; }, onBrowserState() {}, onHidden() {},
     expand() { calls.push(['expand']); }, collapse() { calls.push(['collapse']); }, selectAgent(a) { calls.push(['agent', a]); },
     command(value) { calls.push(['command', value]); }, open() { calls.push(['open']); }, dragStart() { calls.push(['dragStart']); }, dragMove() {}, dragEnd() {}, decision(choice, id) { calls.push(['decision', choice, id]); }, restartUpdate() {},
   } };

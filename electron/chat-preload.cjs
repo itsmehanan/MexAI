@@ -52,3 +52,10 @@ contextBridge.exposeInMainWorld('toolApprovals', {
   onApproval: callback => { const listener = (_event, request) => callback(request); ipcRenderer.on('tools:approval', listener); return () => ipcRenderer.removeListener('tools:approval', listener); },
   decide: (id, choice) => ipcRenderer.send('tools:decision', id, choice),
 });
+
+contextBridge.exposeInMainWorld('browserControl', {
+  open: () => ipcRenderer.invoke('browser:open-manual'),
+  enable: () => ipcRenderer.invoke('browser:enable'),
+  stop: () => ipcRenderer.invoke('browser:stop'),
+  onStop: callback => { const listener = () => callback(); ipcRenderer.on('browser:stop-request',listener); return () => ipcRenderer.removeListener('browser:stop-request',listener); },
+});

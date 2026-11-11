@@ -5,6 +5,7 @@ const select = document.getElementById('agent-select');
 const preview = document.getElementById('result-preview');
 const label = document.getElementById('result-label');
 const mic = document.getElementById('mic');
+let browserActive = false;
 let pointerStart, moved = false, state = 'resting', over = false, collapseTimer, pending, pendingText, pendingTimer, resultAgent, approvalRequest, recording = false, voicePhase = 'idle', sendVoiceImmediately = false, pendingFromVoice = false, voiceAgent;
 function updateExpression() {
   const expression = voicePhase === 'recording' || voicePhase === 'requesting' ? 'listening'
@@ -20,20 +21,22 @@ function scheduleCollapse() {
   }, 3500);
 }
 window.island.onState(next => {
-  if (['resting', 'listening', 'working', 'approval', 'update', 'command', 'result'].includes(next)) {
+  if (['resting', 'listening', 'working', 'approval', 'update', 'command', 'result', 'browser'].includes(next)) {
     state = next;
     root.className = `island ${next}`;
     updateExpression();
     if (next === 'result' && !over) scheduleCollapse();
   }
 });
+window.island.onBrowserState(active => { browserActive=active; document.getElementById('browser-stop-approval').hidden = !active; if (approvalRequest && active) document.getElementById('approval-title').textContent = `Agent controlling browser — approval: ${approvalRequest.name}`; });
 window.island.onApproval(request => {
   approvalRequest = request;
-  document.getElementById('approval-title').textContent = request ? `Needs approval: ${request.name}` : 'Needs approval';
-  document.getElementById('approval-details').textContent = request?.name === 'rename_folder_batch' ? request.renames.map(r => `${r.source} → ${r.destination}`).join('\n') : request ? JSON.stringify({ action:request.name === 'delete_file' ? 'Move file to Recycle Bin' : request.name === 'move_file' ? 'Move file' : request.name === 'copy_file' ? 'Copy file without overwriting' : request.name === 'create_folder' ? 'Create folder' : request.overwrite ? 'Replace file with this content' : 'Create file with this content', source:request.source, ...(request.destination ? {destination:request.destination} : {}), overwrite:request.overwrite, ...request.arguments }, null, 2) : 'Allow this demo action?';
+  document.getElementById('approval-title').textContent = request?.oneTime ? `Agent controlling browser — approval: ${request.name}` : request ? `Needs approval: ${request.name}` : 'Needs approval';
+  document.getElementById('approval-details').textContent = request?.oneTime ? JSON.stringify(request.arguments, null, 2) : request?.name === 'rename_folder_batch' ? request.renames.map(r => `${r.source} → ${r.destination}`).join('\n') : request ? JSON.stringify({ action:request.name === 'delete_file' ? 'Move file to Recycle Bin' : request.name === 'move_file' ? 'Move file' : request.name === 'copy_file' ? 'Copy file without overwriting' : request.name === 'create_folder' ? 'Create folder' : request.overwrite ? 'Replace file with this content' : 'Create file with this content', source:request.source, ...(request.destination ? {destination:request.destination} : {}), overwrite:request.overwrite, ...request.arguments }, null, 2) : 'Allow this demo action?';
   document.getElementById('approve').textContent = request?.name === 'rename_folder_batch' ? 'Approve all' : 'Approve';
   document.getElementById('always').textContent = request?.name === 'rename_folder_batch' ? 'Always allow renames in these parent folders' : 'Always allow this kind of action in this folder';
-  document.getElementById('always').style.display = request ? '' : 'none';
+  document.getElementById('always').style.display = request && !request.oneTime ? '' : 'none';
+  document.getElementById('browser-stop-approval').hidden = !browserActive;
 });
 window.island.onVoiceSetting(enabled => { sendVoiceImmediately = enabled === true; });
 window.island.onAgent(agent => { if (agent === 'hanex' || agent === 'shumex') select.value = agent; });
@@ -145,3 +148,6 @@ document.getElementById('restart-update').addEventListener('click', () => window
 
 document.getElementById('always').addEventListener('click', () => { if (approvalRequest) window.island.decision('always', approvalRequest.id); });
 document.getElementById('approval-open').addEventListener('click', () => window.island.open());
+
+document.getElementById('browser-stop').addEventListener('click', () => window.island.stopBrowser());
+document.getElementById('browser-stop-approval').addEventListener('click', () => window.island.stopBrowser());

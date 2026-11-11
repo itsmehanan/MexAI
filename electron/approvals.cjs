@@ -17,14 +17,14 @@ function createApprovals(file, onChange) {
   function refresh() { onChange(queue[0]?.request || null); }
   function decide(id, choice) {
     const item = queue[0];
-    if (!item || item.request.id !== id || !['approve','deny','always'].includes(choice)) return false;
+    if (!item || item.request.id !== id || !['approve','deny','always'].includes(choice) || (item.request.oneTime && choice === 'always')) return false;
     let result = choice === 'deny' ? 'deny' : 'approve';
     if (choice === 'always') { try { const key = scope(item.request), rules = load(); if (!rules.includes(key)) save([...rules,key]); } catch { result = 'deny'; } }
     queue.shift(); item.cleanup(); item.resolve(result); refresh(); return true;
   }
   async function request(request, signal) {
     if (signal?.aborted) return 'deny';
-    if (load().includes(scope(request))) return 'approve';
+    if (!request.oneTime && load().includes(scope(request))) return 'approve';
     return new Promise(resolve => {
       let timer;
       const abort = () => {

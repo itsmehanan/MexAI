@@ -577,10 +577,13 @@ export default function App() {
   useEffect(() => { window.islandChat?.activeAgent(activeAgentId); }, [activeAgentId]);
   useEffect(() => { window.islandChat?.voiceSetting(settings.sendVoiceImmediately); }, [settings.sendVoiceImmediately]);
 
+  useEffect(() => window.browserControl?.onStop(() => abortControllerRef.current?.abort()), []);
+
   // Stop generation
   const handleStopGeneration = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
+      void window.browserControl?.stop().catch(() => {});
     }
   };
 
@@ -703,10 +706,10 @@ export default function App() {
     <div className={`app-shell theme-${activeAgentId}`}>
       {toolApproval && <div className="fixed inset-0 z-[100] bg-black/75 flex items-center justify-center p-5" role="alertdialog" aria-modal="true" aria-labelledby="approval-title">
         <div className="w-full max-w-2xl max-h-[85vh] overflow-auto rounded-2xl border border-cyan-300/30 bg-[#11182a] p-5 text-white shadow-2xl">
-          <h2 id="approval-title" className="text-lg font-bold">Approve file action: {toolApproval.name}</h2>
-          <p className="text-sm text-slate-300 mt-2">{toolApproval.name === 'rename_folder_batch' ? `Rename ${toolApproval.renames?.length || 0} folders in one batch.` : toolApproval.name === 'delete_file' ? 'Move this file to the Recycle Bin.' : toolApproval.name === 'move_file' ? 'Move this file to the destination.' : toolApproval.name === 'copy_file' ? 'Copy this file to the destination without overwriting.' : toolApproval.name === 'create_folder' ? 'Create this folder.' : toolApproval.overwrite ? 'Replace the existing file with this exact content.' : 'Create this file with this exact content.'}</p>
+          <h2 id="approval-title" className="text-lg font-bold">Approve {toolApproval.oneTime ? 'browser' : 'file'} action: {toolApproval.name}</h2>
+          <p className="text-sm text-slate-300 mt-2">{toolApproval.oneTime ? 'Review the site and exact action before approving. Browser pages can have unintended effects.' : toolApproval.name === 'rename_folder_batch' ? `Rename ${toolApproval.renames?.length || 0} folders in one batch.` : toolApproval.name === 'delete_file' ? 'Move this file to the Recycle Bin.' : toolApproval.name === 'move_file' ? 'Move this file to the destination.' : toolApproval.name === 'copy_file' ? 'Copy this file to the destination without overwriting.' : toolApproval.name === 'create_folder' ? 'Create this folder.' : toolApproval.overwrite ? 'Replace the existing file with this exact content.' : 'Create this file with this exact content.'}</p>
           <pre className="mt-3 max-h-[48vh] overflow-auto rounded-xl bg-black/30 p-3 text-xs whitespace-pre-wrap break-all select-text">{toolApproval.name === 'rename_folder_batch' ? toolApproval.renames?.map(r => `${r.source} → ${r.destination}`).join('\n') : JSON.stringify({ source:toolApproval.source, ...(toolApproval.destination ? {destination:toolApproval.destination} : {}), ...toolApproval.arguments }, null, 2)}</pre>
-          <div className="mt-4 flex flex-wrap gap-2">{([['approve',toolApproval.name === 'rename_folder_batch' ? 'Approve all' : 'Approve'],['deny','Deny'],['always',toolApproval.name === 'rename_folder_batch' ? 'Always allow renames in these parent folders' : 'Always allow this kind of action in this folder']] as const).map(([choice,label]) => <button key={choice} type="button" onClick={() => window.toolApprovals?.decide(toolApproval.id, choice)} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/20">{label}</button>)}</div>
+          <div className="mt-4 flex flex-wrap gap-2">{([['approve',toolApproval.name === 'rename_folder_batch' ? 'Approve all' : 'Approve'],['deny','Deny'],['always',toolApproval.name === 'rename_folder_batch' ? 'Always allow renames in these parent folders' : 'Always allow this kind of action in this folder']] as const).filter(([choice]) => !toolApproval.oneTime || choice !== 'always').map(([choice,label]) => <button key={choice} type="button" onClick={() => window.toolApprovals?.decide(toolApproval.id, choice)} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/20">{label}</button>)}</div>
           <button type="button" onClick={handleStopGeneration} className="mt-3 text-xs text-rose-300 underline">Stop request</button>
           {['move_file','copy_file'].includes(toolApproval.name) && <p className="mt-2 text-xs text-slate-400">Always allow applies to this action and this source/destination folder pair.</p>}
         </div>
@@ -743,6 +746,8 @@ export default function App() {
           <div className="chat-heading">
             <div className="chat-heading-title"><Avatar agentId={activeAgentId} size="md" status={activeCharacterStatus} /><div><span className="eyebrow">YOUR CONVERSATION</span><h1>Chat with {activeAgent.name} <span className="heading-dot">✳</span></h1><p>{isHanex ? 'A little clarity, whenever you need it.' : 'A little inspiration, whenever you need it.'}</p></div></div>
             <div className="heading-actions">
+              {window.browserControl && <button type="button" title="Open a separate browser to sign in yourself" onClick={async () => { setUndoMessage(''); try { await window.browserControl!.open(); setUndoMessage('Separate browser opened. Sign in yourself, then enable browser control. Never share passwords in chat.'); } catch (e: any) { setUndoMessage(e?.message || 'Could not open the browser.'); } }} className="text-xs rounded-xl bg-white/10 px-3 py-2">Open browser</button>}
+              {window.browserControl && <button type="button" onClick={async () => { try { await window.browserControl!.enable(); setUndoMessage('Agent browser control enabled. Use the island Stop button to end it.'); } catch (e:any) { setUndoMessage(e?.message || 'Could not enable browser control.'); } }} className="text-xs rounded-xl bg-white/10 px-3 py-2">Enable browser control</button>}
               {window.toolApprovals && <button type="button" disabled={undoBusy || isGenerating} title="Undo last rename batch" onClick={async () => { setUndoBusy(true); setUndoMessage(''); try { const result = await window.toolApprovals!.undoRenames(); setUndoMessage(`Undid ${result.count} folder rename(s).`); } catch (e: any) { setUndoMessage(e?.message || 'Undo failed.'); } finally { setUndoBusy(false); } }} className="text-xs rounded-xl bg-white/10 px-3 py-2 disabled:opacity-50">Undo last batch</button>}
               <button onClick={() => { const prompt = activeAgent.suggestedPrompts[Math.floor(Math.random() * activeAgent.suggestedPrompts.length)]; handleSendMessage(prompt.prompt); }} disabled={isGenerating} title="Send a random prompt starter" aria-label="Send a random prompt starter"><Sparkles size={17} /></button>
               <button onClick={() => handleExportChat(activeAgentId)} title="Export chat history" aria-label="Export chat history"><Download size={17} /></button>

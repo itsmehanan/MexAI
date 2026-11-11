@@ -47,3 +47,12 @@ test('OpenRouter tool results precede image content for parallel image calls', a
   assert.equal(output,'Two pictures.'); const msgs=payloads[1].messages; assert.deepEqual(msgs.slice(-3).map((m:any)=>m.role),['tool','tool','user']); assert.equal(msgs.at(-1).content[1].image_url.url,'data:image/png;base64,abc');
  } finally {global.fetch=original;}
 });
+
+test('browser screenshots are sent as images only to a vision-capable provider', async () => {
+  const original=global.fetch; let count=0; const payloads:any[]=[],cards:any[]=[];
+  global.fetch=async (_url,init)=>{payloads.push(JSON.parse(String(init?.body))); count++; const parts=count===1 ? [{functionCall:{name:'browser_screenshot',args:{}}}] : [{text:'I can see the page.'}]; return new Response(JSON.stringify({candidates:[{content:{role:'model',parts},finishReason:'STOP'}]}),{status:200,headers:{'Content-Type':'application/json'}});};
+  try {
+    await runToolModel({provider:'gemini',model:'gemini-test',key:'secret',messages:[{role:'user',content:'Look'}],system:'help',folders:[],signal:new AbortController().signal,supportsBrowser:true,supportsImages:true,onCard:c=>cards.push(c),execute:async()=>({status:'completed',result:{message:'Captured'},image:{mimeType:'image/png',data:'screenshot-secret'}})});
+    assert(payloads[0].tools[0].functionDeclarations.some((f:any)=>f.name==='browser_screenshot')); assert(payloads[1].contents.some((c:any)=>c.parts.some((p:any)=>p.inlineData?.data==='screenshot-secret'))); assert(!JSON.stringify(cards).includes('screenshot-secret'));
+  } finally {global.fetch=original;}
+});

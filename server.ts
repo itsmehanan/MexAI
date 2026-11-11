@@ -803,7 +803,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
       }
       if (toolCapable && (candidate.provider === 'gemini' || candidate.provider === 'openrouter')) {
         send({ answeringModel: { provider: candidate.provider, model: candidate.model } });
-        const text = await runToolModel({ provider:candidate.provider, model:candidate.model, key, messages:messages || [], system:systemInstruction, folders:allowedFolders, signal, supportsImages: candidate.provider === 'gemini' || await openRouterSupportsImages(candidate.model).catch(() => false),
+        const text = await runToolModel({ provider:candidate.provider, model:candidate.model, key, messages:messages || [], system:systemInstruction, folders:allowedFolders, signal, supportsBrowser:!!keyPort && process.env.MEXAI_SECURE_KEYS === '1', supportsImages: candidate.provider === 'gemini' || await openRouterSupportsImages(candidate.model).catch(() => false),
           onProgress: message => send({ progress:message }),
           onCard: card => { performedTool = true; send({ toolCard: redactValue(card, key) }); },
           execute: async (call, signal) => call.name === 'fetch_webpage' || call.name === 'web_search' ? executeWeb(call, signal) : desktopTool('execute', call, signal),

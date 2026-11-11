@@ -10,6 +10,10 @@ files:
   - '!**/.env*'
   # Server and updater bundles include runtime dependencies; Vite is development-only.
   - '!node_modules/**'
+extraResources:
+  - from: node_modules/playwright-core
+    to: playwright-core
+    filter: ['**/*']
 publish:
   provider: github
   owner: itsmehanan

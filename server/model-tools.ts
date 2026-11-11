@@ -2,7 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import { runToolLoop, geminiToolDeclarations, openRouterToolDeclarations, type ConversationStep, type ToolCall } from './tool-protocol';
 import { randomUUID } from 'node:crypto';
 
-export async function runToolModel(options: { provider: 'gemini' | 'openrouter'; model: string; key: string; messages: any[]; system: string; folders: string[]; signal: AbortSignal; supportsImages?: boolean; onProgress?: (message: string) => void; onCard: (card: unknown) => void; onRejected?: (call: ToolCall, reason: string) => Promise<void>; execute: (call: ToolCall, signal: AbortSignal) => Promise<any>; executeBatch?: (calls: ToolCall[], signal: AbortSignal) => Promise<any[]> }): Promise<string> {
+export async function runToolModel(options: { provider: 'gemini' | 'openrouter'; model: string; key: string; messages: any[]; system: string; folders: string[]; signal: AbortSignal; supportsImages?: boolean; supportsBrowser?: boolean; onProgress?: (message: string) => void; onCard: (card: unknown) => void; onRejected?: (call: ToolCall, reason: string) => Promise<void>; execute: (call: ToolCall, signal: AbortSignal) => Promise<any>; executeBatch?: (calls: ToolCall[], signal: AbortSignal) => Promise<any[]> }): Promise<string> {
   const { provider, model, key, messages, system, folders, signal } = options;
   const ai = provider === 'gemini' ? new GoogleGenAI({ apiKey: key }) : undefined;
   const instruction = `${system}\n\nAllowed folders (use the exact folder string in tool calls): ${JSON.stringify(folders)}. Use only the provided tools. The application handles approvals for file changes.`;
@@ -28,7 +28,7 @@ export async function runToolModel(options: { provider: 'gemini' | 'openrouter';
     }
     const conversation: any[] = [{ role:'system', content:instruction }, ...messages.map(m => ({ role:m.role === 'assistant' ? 'assistant' : 'user', content:m.content }))];
     let images: any[] = [];
-    const flushImages = () => { if (images.length) { conversation.push({ role:'user', content:[{type:'text',text:'Images returned by the view_image tool:'}, ...images] }); images = []; } };
+    const flushImages = () => { if (images.length) { conversation.push({ role:'user', content:[{type:'text',text:'Images returned by the tool:'}, ...images] }); images = []; } };
     for (const step of history) {
       if (step.kind === 'model') { flushImages(); conversation.push(step.providerData); }
       else {
@@ -45,6 +45,6 @@ export async function runToolModel(options: { provider: 'gemini' | 'openrouter';
     const calls = (message.tool_calls || []).map((call: any) => { let args; try { args = JSON.parse(call.function?.arguments || '{}'); } catch { args = null; } return { id:call.id, name:call.function?.name, arguments:args }; });
     return { text: calls.length ? undefined : message.content || '', calls, providerData:message };
   };
-  const result = await runToolLoop({ provider, allowedFolders:folders, openRouterSupportsTools:true, supportsImages:options.supportsImages, onProgress:options.onProgress, signal, next, execute:options.execute, executeBatch:options.executeBatch, onCard:options.onCard, onRejected:options.onRejected });
+  const result = await runToolLoop({ provider, allowedFolders:folders, openRouterSupportsTools:true, supportsImages:options.supportsImages, supportsBrowser:options.supportsBrowser, onProgress:options.onProgress, signal, next, execute:options.execute, executeBatch:options.executeBatch, onCard:options.onCard, onRejected:options.onRejected });
   return result.text;
 }

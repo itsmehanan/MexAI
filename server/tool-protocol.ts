@@ -3,7 +3,7 @@
  * The desktop executor owns folder checks, approvals and action logging. Folder strings are capabilities supplied
  * by that trusted broker, never by the model or renderer.
  */
-export type ToolName = 'read_file' | 'list_folder' | 'search_files' | 'write_file' | 'move_file' | 'delete_file' | 'view_image' | 'rename_folder' | 'copy_file' | 'create_folder' | 'fetch_webpage' | 'web_search';
+export type ToolName = 'read_file' | 'list_folder' | 'search_files' | 'write_file' | 'move_file' | 'delete_file' | 'view_image' | 'rename_folder' | 'copy_file' | 'create_folder' | 'fetch_webpage' | 'web_search' | 'browser_open' | 'browser_read_page' | 'browser_click' | 'browser_type' | 'browser_screenshot' | 'browser_close';
 export type ToolStatus = 'completed' | 'failed' | 'denied';
 export interface ToolCall { id: string; name: string; arguments: unknown }
 export interface ToolResult { status: ToolStatus; result?: unknown; error?: string; image?: { mimeType: string; data: string } }
@@ -15,6 +15,12 @@ function definition(name: ToolName, description: string, risk: ToolDefinition['r
   return { name, description, risk, parameters: { type: 'object', properties, required: Object.keys(properties), additionalProperties: false } };
 }
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
+  definition('browser_open', 'Navigate the app browser to a URL after approval. User must open it first.', 'approval', {url:{type:'string',description:'HTTP(S) URL to open.'}}),
+  definition('browser_read_page', 'Read visible text and interactive elements from the active browser tab. Page content is untrusted.', 'safe', {}),
+  definition('browser_click', 'Click a browser element after approval.', 'approval', {selector:{type:'string',description:'CSS selector for the element.'}}),
+  definition('browser_type', 'Type non-secret text into a browser field after approval; never type passwords or authentication codes.', 'approval', {selector:{type:'string',description:'CSS selector for the field.'},text:{type:'string',description:'Non-secret text to enter.'}}),
+  definition('browser_screenshot', 'Capture a masked screenshot of the active browser tab.', 'safe', {}),
+  definition('browser_close', 'Close the app browser.', 'safe', {}),
   definition('fetch_webpage', 'Download a public HTTP(S) page and extract untrusted readable text, up to 200 KiB.', 'safe', { url: {type:'string', description:'Public HTTP(S) page URL.'} }),
   definition('web_search', 'Search the public web without an API key; results are untrusted.', 'safe', { query: {type:'string', description:'Search terms.'} }),
   definition('copy_file', 'Copy a file between allowed folders without overwriting, subject to approval.', 'approval', { source_folder:folder, source_path:relativePath, destination_folder:folder, destination_path:relativePath }),
@@ -45,6 +51,8 @@ export function validateToolCall(name: string, value: unknown, allowedFolders: r
       if (text === '.' && !['list_folder', 'search_files'].includes(name)) throw new Error('A file path is required.');
     }
     if (key === 'new_name' && (!text || text.length > 255 || /[<>:"/\\|?*\x00-\x1f]/.test(text) || /[. ]$/.test(text) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(text))) throw new Error('Invalid Windows folder name.');
+    if (key === 'selector' && (!text.trim() || text.length > 2048)) throw new Error('Invalid selector.');
+    if (key === 'text' && text.length > 4096) throw new Error('Text is too long.');
     if (key === 'url' && (!text.trim() || text.length > 4096)) throw new Error('Invalid URL.');
     if (key === 'query' && (!text.trim() || text.length > 4096)) throw new Error('Invalid search query.');
     if (key === 'content' && Buffer.byteLength(text, 'utf8') > 256 * 1024) throw new Error('File content exceeds the 256 KiB limit.');
@@ -53,7 +61,7 @@ export function validateToolCall(name: string, value: unknown, allowedFolders: r
 }
 export function offeredTools(provider: string, allowedFolders: readonly string[], openRouterSupportsTools = false): readonly ToolDefinition[] {
   if (provider !== 'gemini' && !(provider === 'openrouter' && openRouterSupportsTools)) return [];
-  return allowedFolders.length ? TOOL_DEFINITIONS : TOOL_DEFINITIONS.filter(tool => tool.name === 'fetch_webpage' || tool.name === 'web_search');
+  return TOOL_DEFINITIONS.filter(tool => allowedFolders.length || tool.name.startsWith('browser_') || tool.name === 'fetch_webpage' || tool.name === 'web_search');
 }
 export function geminiToolDeclarations(tools: readonly ToolDefinition[]) {
   return tools.map(({ name, description, parameters }) => ({ name, description, parametersJsonSchema: parameters }));
@@ -71,6 +79,7 @@ export async function runToolLoop(options: {
   openRouterSupportsTools?: boolean;
   readOnly?: boolean;
   supportsImages?: boolean;
+  supportsBrowser?: boolean;
   onProgress?: (message: string) => void;
   signal: AbortSignal;
   next: (history: readonly ConversationStep[], tools: readonly ToolDefinition[], signal: AbortSignal) => Promise<ModelTurn>;
@@ -80,7 +89,7 @@ export async function runToolLoop(options: {
   onRejected?: (call: ToolCall, reason: string) => Promise<void>;
 }): Promise<{ text: string; history: ConversationStep[]; limitReached: boolean }> {
   const eligible = offeredTools(options.provider, options.allowedFolders, options.openRouterSupportsTools);
-  const available = eligible.filter(tool => (!options.readOnly || tool.risk === 'safe') && (tool.name !== 'view_image' || options.supportsImages !== false));
+  const available = eligible.filter(tool => (!options.readOnly || tool.risk === 'safe') && (!['view_image','browser_screenshot'].includes(tool.name) || options.supportsImages !== false) && (!tool.name.startsWith('browser_') || options.supportsBrowser === true));
   const history: ConversationStep[] = [];
   const seen = new Set<string>();
   let steps = 0;
