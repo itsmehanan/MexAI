@@ -58,6 +58,7 @@ export const PROVIDERS_META: Record<ProviderId, ProviderMeta> = {
     borderColor: 'border-purple-500/30',
     badgeBg: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
   },
+  custom: { id: 'custom', name: 'Custom (OpenAI-compatible)', tagline: 'Your own endpoint', description: 'Use an OpenAI-compatible chat completions API.', keyPlaceholder: 'API key', keyHelp: 'Keys are stored securely in the desktop app.', accentColor: '#a78bfa', borderColor: 'border-purple-500/30', badgeBg: 'bg-purple-500/15 text-purple-300 border-purple-500/30' },
   ollama: {
     id: 'ollama',
     name: 'Ollama (Local)',
@@ -73,6 +74,7 @@ export const PROVIDERS_META: Record<ProviderId, ProviderMeta> = {
 };
 
 export const DEFAULT_PROVIDER_MODELS: Record<ProviderId, ModelOption[]> = {
+  custom: [],
   gemini: [
     {
       id: 'gemini-3.8-flash',
@@ -153,66 +155,7 @@ export const DEFAULT_PROVIDER_MODELS: Record<ProviderId, ModelOption[]> = {
       description: 'Rapid responses with near-Sonnet conversational skill.',
     },
   ],
-  openrouter: [
-    {
-      id: 'meta-llama/llama-3.3-70b-instruct:free',
-      name: 'Llama 3.3 70B (Free)',
-      provider: 'openrouter',
-      isFree: true,
-      badge: 'Free Tier',
-      description: 'Meta’s open flagship 70B instruct model hosted freely via OpenRouter.',
-    },
-    {
-      id: 'google/gemini-2.0-flash-exp:free',
-      name: 'Gemini 2.0 Flash (Free)',
-      provider: 'openrouter',
-      isFree: true,
-      badge: 'Free Tier',
-      description: 'Google’s experimental fast multimodal model available for free.',
-    },
-    {
-      id: 'deepseek/deepseek-r1:free',
-      name: 'DeepSeek R1 (Free)',
-      provider: 'openrouter',
-      isFree: true,
-      badge: 'Free Reasoning',
-      description: 'Open-weights reasoning model with explicit chain of thought.',
-    },
-    {
-      id: 'qwen/qwen-2.5-coder-32b-instruct:free',
-      name: 'Qwen 2.5 Coder 32B (Free)',
-      provider: 'openrouter',
-      isFree: true,
-      badge: 'Free Tier',
-      description: 'Alibaba’s state-of-the-art coding and math model.',
-    },
-    {
-      id: 'mistralai/mistral-small-24b-instruct-2501:free',
-      name: 'Mistral Small 24B (Free)',
-      provider: 'openrouter',
-      isFree: true,
-      badge: 'Free Tier',
-      description: 'Compact, efficient model by Mistral AI.',
-    },
-    {
-      id: 'anthropic/claude-3.7-sonnet',
-      name: 'Claude 3.7 Sonnet (Router)',
-      provider: 'openrouter',
-      description: 'Claude 3.7 Sonnet routed via OpenRouter.',
-    },
-    {
-      id: 'openai/gpt-4o',
-      name: 'GPT-4o (Router)',
-      provider: 'openrouter',
-      description: 'GPT-4o routed via OpenRouter.',
-    },
-    {
-      id: 'deepseek/deepseek-chat',
-      name: 'DeepSeek V3 (Router)',
-      provider: 'openrouter',
-      description: 'DeepSeek 671B MoE model.',
-    },
-  ],
+  openrouter: [], // Populated from the live catalog.
   ollama: [
     {
       id: 'llama3.2',
@@ -240,3 +183,17 @@ export const DEFAULT_PROVIDER_MODELS: Record<ProviderId, ModelOption[]> = {
     },
   ],
 };
+
+// The live catalog is the only source of verified free models. Manually entered
+// IDs and the current selection stay available, but are explicitly unverified.
+export function getOpenRouterModels(modelId: string | undefined, live: ModelOption[], selectedId?: string): ModelOption[] {
+  const curatedDefault: ModelOption = { id: 'openrouter/free', name: 'openrouter/free', provider: 'openrouter', isFree: true, badge: 'Default', description: 'OpenRouter free model router.' };
+  const result: ModelOption[] = [];
+  const ids = [modelId?.trim() || 'openrouter/free', ...(selectedId ? [selectedId] : []), 'openrouter/free'];
+  for (const id of ids) {
+    if (result.some(model => model.id === id)) continue;
+    result.push(live.find(model => model.id === id) || (id === 'openrouter/free' ? curatedDefault : { id, name: id, provider: 'openrouter', badge: 'Unverified', description: 'Manually entered or previously selected. Check OpenRouter pricing.' }));
+  }
+  for (const model of live) if (!result.some(other => other.id === model.id)) result.push(model);
+  return result;
+}

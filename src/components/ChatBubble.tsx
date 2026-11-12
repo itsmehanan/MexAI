@@ -60,11 +60,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
         <div className="flex items-end gap-2.5 max-w-[85%] md:max-w-[75%]">
           <div className="flex flex-col items-end">
             <div
-              className={`px-4 py-3 rounded-2xl rounded-br-sm text-[14px] leading-relaxed shadow-lg backdrop-blur-md ${
-                isHanex
-                  ? 'bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 text-white shadow-cyan-950/30'
-                  : 'bg-gradient-to-r from-rose-500 via-pink-600 to-fuchsia-600 text-white shadow-pink-950/30'
-              }`}
+              className="user-bubble"
             >
               <p className="whitespace-pre-wrap select-text">{message.content}</p>
             </div>
@@ -98,7 +94,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
           agentId={agent.id}
           size="md"
           showStatus={true}
-          status={isSpeaking ? 'speaking' : message.status === 'streaming' ? 'typing' : 'online'}
+          status={isSpeaking ? 'speaking' : message.status === 'streaming' ? (message.content.trim() ? 'working' : 'typing') : 'online'}
           className="mt-1"
         />
 
@@ -106,6 +102,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
           {/* Header meta */}
           <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             <span className="text-sm font-bold text-slate-200 tracking-tight">{agent.name}</span>
+            {message.model && message.status !== 'error' && <span className="text-[10px] text-slate-400">Answered by {message.provider} · {message.model}</span>}
             <span
               className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${
                 isHanex
@@ -120,20 +117,22 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
             </span>
           </div>
 
+          {message.progress && message.status === 'streaming' && <p role="status" className="mb-2 text-xs text-cyan-200">{message.progress}</p>}
+          {message.toolCards?.map(card => <div key={card.id} className="mb-2 rounded-xl border border-white/10 bg-slate-900/70 p-3 text-xs text-slate-200">
+            <div className="flex justify-between gap-3"><strong>{card.name}</strong><span className="text-cyan-300">{card.status}</span></div>
+            <pre className="mt-2 whitespace-pre-wrap break-all text-slate-400">{JSON.stringify(card.arguments, null, 2)}</pre>
+            {(card.result !== undefined || card.error) && <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all text-slate-300">{card.error || JSON.stringify(card.result, null, 2)}</pre>}
+          </div>)}
           {/* Content Box */}
           <div
-            className={`p-4 md:p-5 rounded-2xl rounded-tl-sm backdrop-blur-xl border transition-colors duration-300 ${
-              isHanex
-                ? 'bg-[#0f172a]/85 border-cyan-500/20 shadow-xl shadow-cyan-950/20'
-                : 'bg-[#18111e]/85 border-pink-500/20 shadow-xl shadow-pink-950/20'
-            }`}
+            className="assistant-bubble"
           >
             {message.status === 'error' ? (
               <div className="flex items-start gap-2.5 text-rose-300 bg-rose-950/30 p-3 rounded-xl border border-rose-500/30">
                 <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0 text-rose-400" />
                 <div className="text-xs leading-relaxed">
                   <p className="font-semibold mb-0.5">Response interrupted</p>
-                  <p className="text-slate-300">{message.error || message.content}</p>
+                  <p className="text-slate-300 whitespace-pre-wrap break-words">{message.error || message.content}</p>
                 </div>
               </div>
             ) : (

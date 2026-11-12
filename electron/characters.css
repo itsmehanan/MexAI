@@ -1,0 +1,43 @@
+/* One scalable CSS character set, shared by the chat and the floating island. */
+.character { position:relative; display:inline-block; flex:none; width:100%; height:100%; overflow:visible; vertical-align:middle; }
+.character--hanex { --body-light:#d8f3ff; --body-mid:#8bcfff; --body-dark:#4899e9; --ink:#102c4c; --blush:#ff9cb2; --detail:#8fd9ff; --glow:rgba(77,171,247,.38); }
+.character--shumex { --body-light:#ffe1ed; --body-mid:#ffb3d3; --body-dark:#e86caa; --ink:#492039; --blush:#f372a5; --detail:#ff81b8; --glow:rgba(247,110,168,.38); }
+.character-body { position:absolute; inset:14% 5% 5%; border-radius:48% 48% 46% 46%; background:radial-gradient(ellipse at 32% 22%,var(--body-light) 0%,var(--body-mid) 45%,var(--body-dark) 100%); box-shadow:inset 0 -2px 4px rgba(27,40,74,.18),inset 0 1px 1px rgba(255,255,255,.8),0 2px 10px var(--glow); }
+.character-body::before { content:''; position:absolute; width:33%; height:14%; left:18%; top:10%; border-radius:50%; background:rgba(255,255,255,.23); transform:rotate(-24deg); }
+.character-eyes { position:absolute; top:35%; left:23%; width:54%; height:29%; display:flex; justify-content:space-between; transition:transform .2s ease; }
+.character-eye { position:relative; width:34%; height:100%; border-radius:48% 48% 52% 52%; background:linear-gradient(150deg,var(--ink) 42%,#426484); box-shadow:inset 0 -1px 1px rgba(255,255,255,.28); }
+.character--shumex .character-eye { background:linear-gradient(150deg,var(--ink) 42%,#9b537e); }
+.character-eye::before { content:''; position:absolute; width:39%; height:34%; top:15%; left:19%; background:white; border-radius:50%; }
+.character-eye::after { content:''; position:absolute; width:18%; height:16%; bottom:19%; right:16%; background:rgba(255,255,255,.75); border-radius:50%; }
+.character-cheek { position:absolute; top:61%; width:17%; height:9%; border-radius:50%; background:var(--blush); opacity:.65; filter:blur(.3px); }
+.character-cheek--left { left:12%; } .character-cheek--right { right:12%; }
+.character-mouth { position:absolute; top:65%; left:45%; width:10%; height:7%; border-bottom:1.5px solid var(--ink); border-radius:0 0 50% 50%; opacity:.8; }
+.character-detail { position:absolute; z-index:2; }
+.character--hanex .character-detail { width:5%; height:18%; top:2%; left:49%; background:#70bdee; border-radius:3px; transform:rotate(12deg); transform-origin:bottom center; }
+.character--hanex .character-detail::after { content:''; position:absolute; width:220%; aspect-ratio:1; left:-60%; top:-23%; border-radius:50%; background:#b8ecff; box-shadow:0 0 5px #7fd8ff; }
+.character--shumex .character-detail { width:13%; height:12%; top:12%; right:13%; border-radius:50%; background:#f25297; box-shadow:0 0 3px rgba(255,140,195,.6); }
+.character--shumex .character-detail::before,.character--shumex .character-detail::after { content:''; position:absolute; width:110%; height:125%; top:-15%; border-radius:70% 35% 65% 40%; background:#ff83b6; }
+.character--shumex .character-detail::before { right:55%; transform:rotate(30deg); } .character--shumex .character-detail::after { left:55%; transform:rotate(-30deg); }
+.character-thoughts { display:none; position:absolute; top:1%; right:-3%; align-items:center; gap:2px; }
+.character-thoughts i { width:3px; height:3px; border-radius:50%; background:var(--body-mid); animation:character-dot 1.1s infinite ease-in-out; }
+.character-thoughts i:nth-child(2) { animation-delay:.15s; } .character-thoughts i:nth-child(3) { animation-delay:.3s; }
+:is(.character[data-expression="thinking"], [data-expression="thinking"] .character) .character-eyes { transform:translateY(-18%); }
+:is(.character[data-expression="thinking"], [data-expression="thinking"] .character) .character-thoughts { display:flex; }
+:is(.character[data-expression="thinking"], [data-expression="thinking"] .character) .character-mouth { border:0; background:var(--ink); border-radius:50%; width:5%; height:5%; left:48%; }
+:is(.character[data-expression="working"], [data-expression="working"] .character) .character-body { animation:character-bounce 1.05s ease-in-out infinite; }
+:is(.character[data-expression="working"], [data-expression="working"] .character) .character-eyes { transform:translateY(8%) scaleY(.82); }
+:is(.character[data-expression="listening"], [data-expression="listening"] .character) .character-eyes { transform:scale(1.15); }
+:is(.character[data-expression="listening"], [data-expression="listening"] .character) .character-detail { animation:character-antenna 1s ease-in-out infinite alternate; }
+:is(.character[data-expression="listening"], [data-expression="listening"] .character)::before,
+:is(.character[data-expression="listening"], [data-expression="listening"] .character)::after { content:''; position:absolute; top:10%; width:15%; height:20%; border-radius:60% 60% 25% 25%; background:var(--body-mid); box-shadow:inset 0 1px 2px rgba(255,255,255,.8),0 0 5px var(--glow); animation:character-antenna 1s ease-in-out infinite alternate; }
+:is(.character[data-expression="listening"], [data-expression="listening"] .character)::before { left:10%; transform:rotate(-25deg); }
+:is(.character[data-expression="listening"], [data-expression="listening"] .character)::after { right:10%; transform:rotate(25deg); }
+
+:is(.character[data-expression="sleeping"], [data-expression="sleeping"] .character) .character-eye { height:25%; margin-top:40%; border-radius:0 0 100% 100%; background:var(--ink); box-shadow:none; }
+:is(.character[data-expression="sleeping"], [data-expression="sleeping"] .character) .character-eye::before,:is(.character[data-expression="sleeping"], [data-expression="sleeping"] .character) .character-eye::after { display:none; }
+:is(.character[data-expression="sleeping"], [data-expression="sleeping"] .character) .character-body { animation:character-breathe 3s ease-in-out infinite; }
+@keyframes character-dot { 0%,80%,100% { opacity:.35; transform:translateY(0); } 40% { opacity:1; transform:translateY(-3px); } }
+@keyframes character-bounce { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-5%); } }
+@keyframes character-antenna { to { transform:scale(1.18) rotate(8deg); filter:brightness(1.2); } }
+@keyframes character-breathe { 0%,100% { transform:scale(1); } 50% { transform:scale(.96); } }
+@media (prefers-reduced-motion:reduce) { .character::before, .character::after, .character *, .character *::before, .character *::after { animation:none !important; transition:none !important; } }

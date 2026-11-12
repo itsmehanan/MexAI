@@ -40,6 +40,7 @@ import { TypingIndicator } from './components/TypingIndicator';
 import { SettingsModal } from './components/SettingsModal';
 import { QuickSwitcherModal } from './components/QuickSwitcherModal';
 import { Avatar } from './components/Avatar';
+import { migrateSavedKeys } from './utils/key-migration';
 
 const STORAGE_KEY_SETTINGS = 'hanex_shumex_settings_v2';
 const STORAGE_KEY_MESSAGES = 'hanex_shumex_messages_v2';
@@ -49,7 +50,8 @@ const DEFAULT_PROVIDERS: Record<ProviderId, ProviderSettings> = {
   gemini: { id: 'gemini', enabled: true, apiKey: '' },
   openai: { id: 'openai', enabled: false, apiKey: '' },
   anthropic: { id: 'anthropic', enabled: false, apiKey: '' },
-  openrouter: { id: 'openrouter', enabled: false, apiKey: '' },
+  openrouter: { id: 'openrouter', enabled: false, apiKey: '', openRouterModelId: 'openrouter/free' },
+  custom: { id: 'custom', enabled: false, apiKey: '', baseUrl: '', customName: 'Custom', customModel: '' },
   ollama: { id: 'ollama', enabled: false, apiKey: '', baseUrl: 'http://localhost:11434' },
 };
 
@@ -58,8 +60,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   model: 'gemini-3.8-flash',
   providers: DEFAULT_PROVIDERS,
   openRouterFreeOnly: true,
+  fallbacks: [],
   soundEffects: true,
+  confettiEffects: true,
   speechSynthesis: false,
+  sendVoiceImmediately: false,
   voiceSpeed: 1.0,
   syncThemeWithAgent: true,
   fontSize: 'normal',
@@ -73,6 +78,7 @@ const DEFAULT_AGENT_MODELS: Record<AgentId, AgentModelSelection> = {
 export default function App() {
   // Active Agent state
   const [activeAgentId, setActiveAgentId] = useState<AgentId>('hanex');
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>('idle');
 
   // Per-Agent Model Memory: Hanex and Shumex each remember their chosen model
   const [agentModels, setAgentModels] = useState<Record<AgentId, AgentModelSelection>>(() => {
@@ -117,9 +123,10 @@ export default function App() {
         return {
           ...DEFAULT_SETTINGS,
           ...parsed,
+          apiKey: '',
           providers: {
             ...DEFAULT_PROVIDERS,
-            ...(parsed.providers || {}),
+            ...Object.fromEntries(Object.entries(parsed.providers || {}).map(([id, value]: [string, any]) => [id, { ...value, apiKey: '' }])) ,
           },
         };
       }
@@ -129,13 +136,51 @@ export default function App() {
     return DEFAULT_SETTINGS;
   });
 
+  const [undoMessage, setUndoMessage] = useState('');
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [toolApproval, setToolApproval] = useState<ToolApproval | null>(null);
+  useEffect(() => {
+    if (!window.toolApprovals) return;
+    let received = false;
+    const off = window.toolApprovals.onApproval(request => { received = true; setToolApproval(request); });
+    window.toolApprovals.current().then(request => { if (!received) setToolApproval(request); }).catch(() => {});
+    return off;
+  }, []);
+
   // Backend status & available environment keys
+  const [updateState, setUpdateState] = useState<DesktopUpdateState>({ version: '', status: 'unavailable' });
+  useEffect(() => {
+    if (!window.desktopUpdates) return;
+    const unsubscribe = window.desktopUpdates.onState(setUpdateState);
+    window.desktopUpdates.status().then(setUpdateState).catch(() => {});
+    return unsubscribe;
+  }, []);
+  const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
+  const [keyStorageError, setKeyStorageError] = useState('');
+  const [settingsReady, setSettingsReady] = useState(false);
   const [hasEnvKey, setHasEnvKey] = useState(false);
   const [envKeys, setEnvKeys] = useState<Record<string, boolean>>({});
 
   // Ollama dynamically fetched models
   const [ollamaModels, setOllamaModels] = useState<ModelOption[]>([]);
   const [isFetchingOllama, setIsFetchingOllama] = useState(false);
+
+  const [openRouterModels, setOpenRouterModels] = useState<ModelOption[]>([]);
+  const [isFetchingOpenRouter, setIsFetchingOpenRouter] = useState(false);
+  const [openRouterError, setOpenRouterError] = useState('');
+  const fetchOpenRouterModels = useCallback(async (refresh = false) => {
+    setIsFetchingOpenRouter(true);
+    setOpenRouterError('');
+    try {
+      const res = await fetch(`/api/providers/openrouter/models${refresh ? '?refresh=1' : ''}`);
+      if (!res.ok) throw new Error('Could not load live free models.');
+      const data = await res.json();
+      if (!Array.isArray(data.models)) throw new Error('Invalid model catalog.');
+      setOpenRouterModels(data.models);
+    } catch { setOpenRouterModels([]); setOpenRouterError('Could not load live free models. Try refreshing.'); }
+    finally { setIsFetchingOpenRouter(false); }
+  }, []);
+  useEffect(() => { if (settings.providers.openrouter?.enabled) void fetchOpenRouterModels(); }, [settings.providers.openrouter?.enabled, fetchOpenRouterModels]);
 
   // Modals state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -212,14 +257,38 @@ export default function App() {
     }
   }, [messages]);
 
-  // Save settings to localStorage
+  // Move old renderer keys to the vault before replacing the legacy settings record.
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
-    } catch (e) {
-      console.warn('Failed to save settings', e);
-    }
-  }, [settings]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await migrateSavedKeys(localStorage, STORAGE_KEY_SETTINGS, window.secureKeys);
+        if (cancelled) return;
+        setSavedKeys(status);
+        setSettingsReady(true);
+      } catch {
+        if (!cancelled) setKeyStorageError('Secure key storage or migration is unavailable. Existing saved data was left untouched; reopen the app after resolving the issue.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsReady) return;
+    try { localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings)); }
+    catch (e) { console.warn('Failed to save settings', e); }
+  }, [settings, settingsReady]);
+
+  const saveSecureKey = async (provider: ProviderId, key: string) => {
+    if (!window.secureKeys || !settingsReady) throw new Error('Secure key storage is unavailable.');
+    await window.secureKeys.save(provider, key);
+    setSavedKeys(prev => ({ ...prev, [provider]: true }));
+  };
+  const removeSecureKey = async (provider: ProviderId) => {
+    if (!window.secureKeys || !settingsReady) throw new Error('Secure key storage is unavailable.');
+    await window.secureKeys.remove(provider);
+    setSavedKeys(prev => ({ ...prev, [provider]: false }));
+  };
 
   // Scroll to bottom helper
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
@@ -256,14 +325,18 @@ export default function App() {
   };
 
   // Send message handler with multi-provider streaming and fallback retry
-  const handleSendMessage = async (text: string) => {
-    if (!text.trim() || isGenerating) return;
+  const handleSendMessage = async (text: string, targetAgent: AgentId = activeAgentId, islandId?: string) => {
+    if (!text.trim() || isGenerating || abortControllerRef.current) {
+      if (islandId) window.islandChat?.status({ phase: 'rejected', agent: targetAgent, text: 'A response is already in progress.', id: islandId });
+      return;
+    }
+    window.islandChat?.status({ phase: 'working', agent: targetAgent, text: 'Preparing your response…', id: islandId });
 
     if (settings.soundEffects) {
       soundFX.playSend();
     }
 
-    const currentModelConfig = agentModels[activeAgentId] || DEFAULT_AGENT_MODELS[activeAgentId];
+    const currentModelConfig = agentModels[targetAgent] || DEFAULT_AGENT_MODELS[targetAgent];
     const providerConfig = settings.providers[currentModelConfig.provider] || {
       id: currentModelConfig.provider,
       enabled: true,
@@ -275,7 +348,7 @@ export default function App() {
       role: 'user',
       content: text,
       timestamp: Date.now(),
-      agentId: activeAgentId,
+      agentId: targetAgent,
       provider: currentModelConfig.provider,
       model: currentModelConfig.model,
       status: 'complete',
@@ -287,23 +360,23 @@ export default function App() {
       role: 'assistant',
       content: '',
       timestamp: Date.now(),
-      agentId: activeAgentId,
+      agentId: targetAgent,
       provider: currentModelConfig.provider,
       model: currentModelConfig.model,
       status: 'streaming',
     };
 
-    const updatedChat = [...activeMessages, userMessage];
+    const updatedChat = [...(messages[targetAgent] || []), userMessage];
     setMessages((prev) => ({
       ...prev,
-      [activeAgentId]: [...updatedChat, assistantMessage],
+      [targetAgent]: [...updatedChat, assistantMessage],
     }));
 
     setIsGenerating(true);
     abortControllerRef.current = new AbortController();
 
     const requestPayload = {
-      agentId: activeAgentId,
+      agentId: targetAgent,
       provider: currentModelConfig.provider,
       model: currentModelConfig.model,
       messages: updatedChat.map((m) => ({
@@ -311,9 +384,9 @@ export default function App() {
         content: m.content,
       })),
       providerConfig: {
-        apiKey: providerConfig.apiKey,
         baseUrl: providerConfig.baseUrl,
       },
+      fallbacks: (settings.fallbacks || []).filter(f => settings.providers[f.provider]?.enabled && f.model?.trim()).map(f => ({ provider: f.provider, model: f.model, baseUrl: settings.providers[f.provider]?.baseUrl })),
     };
 
     try {
@@ -351,13 +424,28 @@ export default function App() {
             if (!jsonStr) continue;
             try {
               const data = JSON.parse(jsonStr);
-              if (data.error) {
+              if (data.reset) {
+                accumulatedText = '';
+                setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => m.id === assistantPlaceholderId ? { ...m, content: '', provider: undefined, model: undefined } : m) }));
+              } else if (data.answeringModel) {
+                setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => m.id === assistantPlaceholderId ? { ...m, provider: data.answeringModel.provider, model: data.answeringModel.model } : m) }));
+              } else if (data.progress) {
+                setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => m.id === assistantPlaceholderId ? { ...m, progress: String(data.progress) } : m) }));
+              } else if (data.toolCard) {
+                setMessages(prev => ({ ...prev, [targetAgent]: prev[targetAgent].map(m => {
+                  if (m.id !== assistantPlaceholderId) return m;
+                  const cards = [...(m.toolCards || [])];
+                  const index = cards.findIndex(card => card.id === data.toolCard.id);
+                  if (index < 0) cards.push(data.toolCard); else cards[index] = data.toolCard;
+                  return { ...m, toolCards: cards };
+                }) }));
+              } else if (data.error) {
                 streamError = data.error;
               } else if (data.text) {
                 accumulatedText += data.text;
                 setMessages((prev) => ({
                   ...prev,
-                  [activeAgentId]: prev[activeAgentId].map((m) =>
+                  [targetAgent]: prev[targetAgent].map((m) =>
                     m.id === assistantPlaceholderId
                       ? { ...m, content: accumulatedText, status: 'streaming' }
                       : m
@@ -396,39 +484,6 @@ export default function App() {
         throw new Error(streamError);
       }
 
-      // Retry once via non-streaming /api/chat if stream returned empty text and no error
-      if (!accumulatedText.trim()) {
-        console.warn(
-          'Stream finished with empty text and no error. Retrying once via non-streaming /api/chat...'
-        );
-        try {
-          const fallbackRes = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(requestPayload),
-            signal: abortControllerRef.current.signal,
-          });
-
-          if (fallbackRes.ok) {
-            const fallbackData = await fallbackRes.json();
-            if (fallbackData.text && fallbackData.text.trim()) {
-              accumulatedText = fallbackData.text.trim();
-            }
-          } else {
-            const fallbackErrorData = await fallbackRes.json().catch((jsonErr) => {
-              console.warn('Failed to parse fallback error JSON:', jsonErr);
-              return {};
-            });
-            if (fallbackErrorData.error) {
-              streamError = fallbackErrorData.error;
-            }
-          }
-        } catch (fallbackErr: any) {
-          if (fallbackErr.name === 'AbortError') throw fallbackErr;
-          console.warn('Fallback /api/chat attempt failed:', fallbackErr);
-        }
-      }
-
       // If still empty or error occurred:
       if (!accumulatedText.trim()) {
         const emptyMsg =
@@ -436,41 +491,46 @@ export default function App() {
           'The model returned an empty response. Try again or switch the model in Settings';
         setMessages((prev) => ({
           ...prev,
-          [activeAgentId]: prev[activeAgentId].map((m) =>
+          [targetAgent]: prev[targetAgent].map((m) =>
             m.id === assistantPlaceholderId
               ? { ...m, content: emptyMsg, status: 'error', error: emptyMsg }
               : m
           ),
         }));
+        window.islandChat?.status({ phase: 'error', agent: targetAgent, text: emptyMsg.slice(0, 1000), id: islandId });
         return;
       }
 
+      window.islandChat?.status({ phase: 'result', agent: targetAgent, text: accumulatedText.slice(0, 1000), id: islandId });
       // Mark complete
       setMessages((prev) => ({
         ...prev,
-        [activeAgentId]: prev[activeAgentId].map((m) =>
+        [targetAgent]: prev[targetAgent].map((m) =>
           m.id === assistantPlaceholderId
-            ? { ...m, content: accumulatedText, status: 'complete' }
+            ? { ...m, content: accumulatedText, progress: undefined, status: 'complete' }
             : m
         ),
       }));
 
       if (settings.soundEffects) {
-        soundFX.playReceive(activeAgentId);
+        soundFX.playReceive(targetAgent);
       }
 
       if (settings.speechSynthesis && accumulatedText) {
-        speakText(accumulatedText, activeAgentId, settings.voiceSpeed);
+        speakText(accumulatedText, targetAgent, settings.voiceSpeed);
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
+        window.islandChat?.status({ phase: 'error', agent: targetAgent, text: 'Generation stopped.', id: islandId });
         setMessages((prev) => ({
           ...prev,
-          [activeAgentId]: prev[activeAgentId].map((m) =>
+          [targetAgent]: prev[targetAgent].map((m) =>
             m.id === assistantPlaceholderId
               ? {
                   ...m,
-                  content: m.content || '(Generation stopped by user)',
+                  content: `${m.content}${m.content ? '\n\n' : ''}(Stopped by user. Some actions may already have completed; check the tool cards and undo log.)`,
+                  progress: undefined,
+                  toolCards: m.toolCards?.map(card => card.status === 'running' ? { ...card, status:'cancelled', error:'Stopped; some actions may already have completed. Check the undo log.' } : card),
                   status: 'complete',
                 }
               : m
@@ -480,13 +540,16 @@ export default function App() {
         const errorMsg =
           err?.message ||
           `Failed to communicate with ${PROVIDERS_META[currentModelConfig.provider]?.name || 'provider'}. Check your API key in Settings.`;
+        window.islandChat?.status({ phase: 'error', agent: targetAgent, text: errorMsg.slice(0, 1000), id: islandId });
         setMessages((prev) => ({
           ...prev,
-          [activeAgentId]: prev[activeAgentId].map((m) =>
+          [targetAgent]: prev[targetAgent].map((m) =>
             m.id === assistantPlaceholderId
               ? {
                   ...m,
                   content: errorMsg,
+                  progress: undefined,
+                  toolCards: m.toolCards?.map(card => card.status === 'running' ? { ...card, status:'failed', error:'Request ended; some actions may already have completed. Check the undo log.' } : card),
                   status: 'error',
                   error: errorMsg,
                 }
@@ -500,10 +563,27 @@ export default function App() {
     }
   };
 
+  const islandCommandRef = useRef(handleSendMessage);
+  islandCommandRef.current = handleSendMessage;
+  useEffect(() => {
+    if (!window.islandChat) return;
+    const offCommand = window.islandChat.onCommand(({ agent, text, id }) => {
+      setActiveAgentId(agent);
+      void islandCommandRef.current(text, agent, id);
+    });
+    const offAgent = window.islandChat.onAgent(agent => setActiveAgentId(agent));
+    return () => { offCommand(); offAgent(); };
+  }, []);
+  useEffect(() => { window.islandChat?.activeAgent(activeAgentId); }, [activeAgentId]);
+  useEffect(() => { window.islandChat?.voiceSetting(settings.sendVoiceImmediately); }, [settings.sendVoiceImmediately]);
+
+  useEffect(() => window.browserControl?.onStop(() => abortControllerRef.current?.abort()), []);
+
   // Stop generation
   const handleStopGeneration = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
+      void window.browserControl?.stop().catch(() => {});
     }
   };
 
@@ -554,7 +634,7 @@ export default function App() {
     URL.revokeObjectURL(url);
 
     try {
-      confetti({ particleCount: 30, spread: 60, origin: { y: 0.8 } });
+      if (settings.confettiEffects) confetti({ particleCount: 30, spread: 60, origin: { y: 0.8 } });
     } catch {}
   };
 
@@ -588,12 +668,22 @@ export default function App() {
     URL.revokeObjectURL(url);
 
     try {
-      confetti({ particleCount: 50, spread: 80, origin: { y: 0.7 } });
+      if (settings.confettiEffects) confetti({ particleCount: 50, spread: 80, origin: { y: 0.7 } });
     } catch {}
   };
 
   // Reset all data
-  const handleResetAllData = () => {
+  const handleResetAllData = async () => {
+    try {
+      if (!settingsReady) throw new Error('Secure migration must complete before resetting data.');
+      if (window.secureKeys) {
+        await window.secureKeys.clear();
+        setSavedKeys({});
+      }
+    } catch {
+      setKeyStorageError('Could not remove secure keys. Reset was cancelled.');
+      return;
+    }
     setMessages(INITIAL_MESSAGES);
     setSettings(DEFAULT_SETTINGS);
     setAgentModels(DEFAULT_AGENT_MODELS);
@@ -603,121 +693,69 @@ export default function App() {
     setIsSettingsOpen(false);
   };
 
+  const streamingMessage = [...activeMessages].reverse().find(message => message.status === 'streaming');
+  const activeCharacterStatus = voicePhase === 'recording' || voicePhase === 'requesting' ? 'listening' : voicePhase === 'transcribing' ? 'typing' : isGenerating && streamingMessage ? (streamingMessage.content.trim() ? 'working' : 'typing') : 'online';
+
   const currentProviderConfig = settings.providers[activeModelSelection.provider];
   const isCurrentProviderKeyMissing =
     activeModelSelection.provider !== 'ollama' &&
-    !currentProviderConfig?.apiKey?.trim() &&
+    !savedKeys[activeModelSelection.provider] &&
     !envKeys[activeModelSelection.provider];
 
   return (
-    <div
-      className={`h-screen w-screen flex flex-col bg-[#070b13] text-slate-100 overflow-hidden font-sans transition-colors duration-500 relative ${
-        isHanex ? 'selection:bg-cyan-500/30 selection:text-cyan-200' : 'selection:bg-rose-500/30 selection:text-rose-200'
-      }`}
-    >
-      {/* Background Ambient Glow Spots */}
-      <div
-        className={`pointer-events-none fixed -top-40 -right-40 w-96 h-96 rounded-full blur-[140px] opacity-25 transition-colors duration-700 ${
-          isHanex ? 'bg-cyan-500' : 'bg-rose-500'
-        }`}
-      />
-      <div
-        className={`pointer-events-none fixed -bottom-40 -left-40 w-96 h-96 rounded-full blur-[160px] opacity-20 transition-colors duration-700 ${
-          isHanex ? 'bg-blue-600' : 'bg-fuchsia-600'
-        }`}
-      />
-
+    <div className={`app-shell theme-${activeAgentId}`}>
+      {toolApproval && <div className="fixed inset-0 z-[100] bg-black/75 flex items-center justify-center p-5" role="alertdialog" aria-modal="true" aria-labelledby="approval-title">
+        <div className="w-full max-w-2xl max-h-[85vh] overflow-auto rounded-2xl border border-cyan-300/30 bg-[#11182a] p-5 text-white shadow-2xl">
+          <h2 id="approval-title" className="text-lg font-bold">Approve {toolApproval.oneTime ? 'browser' : 'file'} action: {toolApproval.name}</h2>
+          <p className="text-sm text-slate-300 mt-2">{toolApproval.oneTime ? 'Review the site and exact action before approving. Browser pages can have unintended effects.' : toolApproval.name === 'rename_folder_batch' ? `Rename ${toolApproval.renames?.length || 0} folders in one batch.` : toolApproval.name === 'delete_file' ? 'Move this file to the Recycle Bin.' : toolApproval.name === 'move_file' ? 'Move this file to the destination.' : toolApproval.name === 'copy_file' ? 'Copy this file to the destination without overwriting.' : toolApproval.name === 'create_folder' ? 'Create this folder.' : toolApproval.overwrite ? 'Replace the existing file with this exact content.' : 'Create this file with this exact content.'}</p>
+          <pre className="mt-3 max-h-[48vh] overflow-auto rounded-xl bg-black/30 p-3 text-xs whitespace-pre-wrap break-all select-text">{toolApproval.name === 'rename_folder_batch' ? toolApproval.renames?.map(r => `${r.source} → ${r.destination}`).join('\n') : JSON.stringify({ source:toolApproval.source, ...(toolApproval.destination ? {destination:toolApproval.destination} : {}), ...toolApproval.arguments }, null, 2)}</pre>
+          <div className="mt-4 flex flex-wrap gap-2">{([['approve',toolApproval.name === 'rename_folder_batch' ? 'Approve all' : 'Approve'],['deny','Deny'],['always',toolApproval.name === 'rename_folder_batch' ? 'Always allow renames in these parent folders' : 'Always allow this kind of action in this folder']] as const).filter(([choice]) => !toolApproval.oneTime || choice !== 'always').map(([choice,label]) => <button key={choice} type="button" onClick={() => window.toolApprovals?.decide(toolApproval.id, choice)} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/20">{label}</button>)}</div>
+          <button type="button" onClick={handleStopGeneration} className="mt-3 text-xs text-rose-300 underline">Stop request</button>
+          {['move_file','copy_file'].includes(toolApproval.name) && <p className="mt-2 text-xs text-slate-400">Always allow applies to this action and this source/destination folder pair.</p>}
+        </div>
+      </div>}
       {/* Desktop Window Title Header with Multi-Provider Model Dropdown */}
       <DesktopHeader
         activeAgent={activeAgent}
-        onSwitchAgent={handleSelectAgent}
+        onOpenQuickSwitcher={() => setIsQuickSwitcherOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         selectedModel={activeModelSelection}
         onSelectModel={handleSelectModelForActiveAgent}
         providers={settings.providers}
-        openRouterFreeOnly={settings.openRouterFreeOnly}
-        onToggleFreeOnly={() =>
-          handleSaveSettings({ openRouterFreeOnly: !settings.openRouterFreeOnly })
-        }
+        openRouterModels={openRouterModels}
+        isFetchingOpenRouter={isFetchingOpenRouter}
+        openRouterError={openRouterError}
+        onRefreshOpenRouter={() => fetchOpenRouterModels(true)}
         ollamaModels={ollamaModels}
         isFetchingOllama={isFetchingOllama}
         onRefreshOllama={() => fetchOllamaModels()}
       />
 
+      {updateState.status === 'ready' && <div role="status" className="flex items-center justify-center gap-3 px-4 py-2 bg-[#1d3046] text-sm text-white">
+        <span>Update ready. Restart to install</span>
+        <button type="button" onClick={() => window.desktopUpdates?.restart()} className="rounded-full bg-[#B5DEFF] text-[#0A1020] px-4 py-1 text-xs font-bold">Restart</button>
+        {updateState.restartError && <span className="text-xs text-amber-200">{updateState.restartError}</span>}
+      </div>}
       {/* Main Desktop Container: Sidebar + Chat Area */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Sidebar */}
-        <Sidebar
-          activeAgentId={activeAgentId}
-          onSelectAgent={handleSelectAgent}
-          messages={messages}
-          onClearChat={handleClearChat}
-          onExportChat={handleExportChat}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-          onOpenQuickSwitcher={() => setIsQuickSwitcherOpen(true)}
-          soundEnabled={settings.soundEffects}
-          onToggleSound={() => handleSaveSettings({ soundEffects: !settings.soundEffects })}
-          hasCustomKey={Boolean(currentProviderConfig?.apiKey?.trim())}
-          hasEnvKey={hasEnvKey}
-          activeModelSelection={activeModelSelection}
-          agentModels={agentModels}
-          providers={settings.providers}
-        />
+        <Sidebar activeAgentId={activeAgentId} onSelectAgent={handleSelectAgent} providers={settings.providers} activeStatus={activeCharacterStatus} />
 
         {/* Chat Main Area */}
-        <main className="flex-1 flex flex-col h-full bg-[#0a0f1c]/70 relative overflow-hidden backdrop-blur-sm">
-          {/* Subtle Top Chat Subheader for Active Agent */}
-          <div className="px-6 py-2.5 border-b border-white/5 flex items-center justify-between bg-black/10 select-none z-10">
-            <div className="flex items-center gap-3">
-              <span
-                className={`w-2 h-2 rounded-full animate-pulse ${
-                  isHanex ? 'bg-cyan-400' : 'bg-pink-400'
-                }`}
-              />
-              <span className="text-xs font-semibold text-slate-300">
-                {activeAgent.name}'s Workspace
-              </span>
-              <span className="text-slate-600 text-xs">•</span>
-              <span className="text-[11px] text-slate-400 hidden sm:inline">
-                Powered by{' '}
-                <strong className="text-slate-200 font-mono">
-                  {activeModelSelection.model}
-                </strong>{' '}
-                ({PROVIDERS_META[activeModelSelection.provider]?.name || activeModelSelection.provider})
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  const randomPrompt =
-                    activeAgent.suggestedPrompts[
-                      Math.floor(Math.random() * activeAgent.suggestedPrompts.length)
-                    ];
-                  handleSendMessage(randomPrompt.prompt);
-                }}
-                disabled={isGenerating}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition cursor-pointer disabled:opacity-40 ${
-                  isHanex
-                    ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/20'
-                    : 'bg-pink-500/10 text-pink-300 border-pink-500/30 hover:bg-pink-500/20'
-                }`}
-                title="Send a random prompt starter"
-              >
-                <Sparkles className="w-3 h-3" />
-                <span className="hidden md:inline">Surprise Prompt</span>
-              </button>
-
-              <button
-                onClick={() => handleClearChat(activeAgentId)}
-                className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-white/5 transition cursor-pointer"
-                title="Clear this conversation"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
+        <main className="chat-main">
+          <div className="chat-heading">
+            <div className="chat-heading-title"><Avatar agentId={activeAgentId} size="md" status={activeCharacterStatus} /><div><span className="eyebrow">YOUR CONVERSATION</span><h1>Chat with {activeAgent.name} <span className="heading-dot">✳</span></h1><p>{isHanex ? 'A little clarity, whenever you need it.' : 'A little inspiration, whenever you need it.'}</p></div></div>
+            <div className="heading-actions">
+              {window.browserControl && <button type="button" title="Open a separate browser to sign in yourself" onClick={async () => { setUndoMessage(''); try { await window.browserControl!.open(); setUndoMessage('Separate browser opened. Sign in yourself, then enable browser control. Never share passwords in chat.'); } catch (e: any) { setUndoMessage(e?.message || 'Could not open the browser.'); } }} className="text-xs rounded-xl bg-white/10 px-3 py-2">Open browser</button>}
+              {window.browserControl && <button type="button" onClick={async () => { try { await window.browserControl!.enable(); setUndoMessage('Agent browser control enabled. Use the island Stop button to end it.'); } catch (e:any) { setUndoMessage(e?.message || 'Could not enable browser control.'); } }} className="text-xs rounded-xl bg-white/10 px-3 py-2">Enable browser control</button>}
+              {window.toolApprovals && <button type="button" disabled={undoBusy || isGenerating} title="Undo last rename batch" onClick={async () => { setUndoBusy(true); setUndoMessage(''); try { const result = await window.toolApprovals!.undoRenames(); setUndoMessage(`Undid ${result.count} folder rename(s).`); } catch (e: any) { setUndoMessage(e?.message || 'Undo failed.'); } finally { setUndoBusy(false); } }} className="text-xs rounded-xl bg-white/10 px-3 py-2 disabled:opacity-50">Undo last batch</button>}
+              <button onClick={() => { const prompt = activeAgent.suggestedPrompts[Math.floor(Math.random() * activeAgent.suggestedPrompts.length)]; handleSendMessage(prompt.prompt); }} disabled={isGenerating} title="Send a random prompt starter" aria-label="Send a random prompt starter"><Sparkles size={17} /></button>
+              <button onClick={() => handleExportChat(activeAgentId)} title="Export chat history" aria-label="Export chat history"><Download size={17} /></button>
+              <button onClick={() => handleClearChat(activeAgentId)} title="Clear this conversation" aria-label="Clear this conversation"><Trash2 size={17} /></button>
             </div>
           </div>
 
+          {undoMessage && <p role="status" className="px-5 py-2 text-xs text-cyan-200">{undoMessage}</p>}
           {/* Missing Key Banner Notice if currently selected provider lacks a key */}
           {isCurrentProviderKeyMissing && (
             <div className="mx-4 mt-3 p-3 rounded-2xl bg-amber-950/30 border border-amber-500/30 flex items-center justify-between gap-3 text-xs text-amber-200">
@@ -738,42 +776,17 @@ export default function App() {
 
           {/* Message List */}
           <div className="flex-1 overflow-y-auto py-4 space-y-1 relative">
-            {/* Ambient agent greeting header banner if few messages */}
             {activeMessages.length <= 2 && (
-              <div className="max-w-xl mx-auto my-6 px-4 text-center">
-                <div className="inline-flex p-3 rounded-3xl bg-white/[0.02] border border-white/5 mb-3 shadow-xl">
-                  <Avatar agentId={activeAgent.id} size="xl" showStatus={true} status="online" />
-                </div>
-                <h2 className="text-lg font-bold text-white tracking-tight mb-1">
-                  Meet {activeAgent.name}
-                </h2>
-                <p className="text-xs text-slate-400 leading-relaxed max-w-md mx-auto mb-2">
-                  {activeAgent.description}
-                </p>
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] font-mono text-slate-300 mb-4">
-                  <Cpu className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Model: {activeModelSelection.model}</span>
-                </div>
-
-                {/* Prompt Starters Chips */}
-                <div className="flex flex-wrap justify-center gap-2 mt-2">
+              <div className="welcome-panel">
+                <div className="welcome-avatar"><Avatar agentId={activeAgent.id} size="2xl" status={isGenerating ? 'typing' : 'online'} /></div>
+                <span className="eyebrow">A LITTLE SPACE FOR BIG IDEAS</span>
+                <h2>Good to see you <span>here.</span></h2>
+                <p>Meet {activeAgent.name}, your {isHanex ? 'thoughtful partner for making sense of things' : 'creative partner for wherever ideas take you'}.</p>
+                <div className="starter-label">NOT SURE WHERE TO START?</div>
+                <div className="starter-grid">
                   {activeAgent.suggestedPrompts.map((p, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => handleSendMessage(p.prompt)}
-                      disabled={isGenerating}
-                      className={`text-left text-xs px-3 py-2 rounded-xl border transition cursor-pointer flex items-center gap-2 group ${
-                        isHanex
-                          ? 'bg-slate-900/60 border-cyan-500/20 hover:border-cyan-400 text-slate-300 hover:text-white'
-                          : 'bg-slate-900/60 border-pink-500/20 hover:border-pink-400 text-slate-300 hover:text-white'
-                      }`}
-                    >
-                      <Sparkles
-                        className={`w-3.5 h-3.5 ${
-                          isHanex ? 'text-cyan-400' : 'text-pink-400'
-                        } group-hover:scale-110 transition-transform`}
-                      />
-                      <span>{p.title}</span>
+                    <button key={idx} onClick={() => handleSendMessage(p.prompt)} disabled={isGenerating}>
+                      <Sparkles size={15} /><span>{p.title}</span><span className="starter-arrow">↗</span>
                     </button>
                   ))}
                 </div>
@@ -808,6 +821,8 @@ export default function App() {
             onSend={handleSendMessage}
             onStop={handleStopGeneration}
             isGenerating={isGenerating}
+            sendVoiceImmediately={settings.sendVoiceImmediately}
+            onVoicePhaseChange={setVoicePhase}
             onSelectPrompt={(p) => handleSendMessage(p)}
           />
         </main>
@@ -819,6 +834,13 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onSaveSettings={handleSaveSettings}
+        updateState={updateState}
+        onCheckUpdates={() => window.desktopUpdates?.check().then(setUpdateState).catch(() => {})}
+        savedKeys={savedKeys}
+        secureStorageAvailable={Boolean(window.secureKeys) && settingsReady}
+        keyStorageError={keyStorageError}
+        onSaveKey={saveSecureKey}
+        onRemoveKey={removeSecureKey}
         onClearAgentChat={handleClearChat}
         onResetAllData={handleResetAllData}
         onExportAll={handleExportAll}

@@ -1,0 +1,33 @@
+appId: com.itsmehanan.hanexshumex
+productName: Hanex & Shumex
+directories:
+  output: release
+files:
+  - electron/**/*
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+  - '!**/.env*'
+  # Server and updater bundles include runtime dependencies; Vite is development-only.
+  - '!node_modules/**'
+extraResources:
+  - from: node_modules/playwright-core
+    to: playwright-core
+    filter: ['**/*']
+publish:
+  provider: github
+  owner: itsmehanan
+  repo: MexAI
+  releaseType: release
+asar: true
+npmRebuild: false
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: Hanex-Shumex-Setup-${version}.${ext}

@@ -1,6 +1,6 @@
 export type AgentId = 'hanex' | 'shumex';
 
-export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama';
+export type ProviderId = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'custom';
 
 export interface ModelOption {
   id: string;
@@ -15,7 +15,10 @@ export interface ProviderSettings {
   id: ProviderId;
   enabled: boolean;
   apiKey: string;
-  baseUrl?: string; // for Ollama
+  baseUrl?: string;
+  customName?: string;
+  customModel?: string;
+  openRouterModelId?: string;
   freeOnlyFilter?: boolean; // for OpenRouter
 }
 
@@ -34,6 +37,8 @@ export interface ChatMessage {
   model?: string;
   status?: 'sending' | 'streaming' | 'complete' | 'error';
   error?: string;
+  progress?: string;
+  toolCards?: { id: string; name: string; arguments: unknown; status: string; result?: unknown; error?: string }[];
 }
 
 export interface AgentTheme {
@@ -74,8 +79,11 @@ export interface AppSettings {
   model: string; // Legacy default
   providers: Record<ProviderId, ProviderSettings>;
   openRouterFreeOnly: boolean;
+  fallbacks: AgentModelSelection[];
   soundEffects: boolean;
+  confettiEffects: boolean;
   speechSynthesis: boolean;
+  sendVoiceImmediately: boolean;
   voiceSpeed: number;
   syncThemeWithAgent: boolean;
   fontSize: 'compact' | 'normal' | 'relaxed';

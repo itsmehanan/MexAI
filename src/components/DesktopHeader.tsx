@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  ArrowLeftRight,
+  Search,
   Settings,
   ChevronDown,
   Check,
@@ -15,18 +15,20 @@ import {
 } from 'lucide-react';
 import { AgentId, AgentProfile, ProviderId, ProviderSettings, ModelOption, AgentModelSelection } from '../types';
 import { AGENTS } from '../data/agents';
-import { PROVIDERS_META, DEFAULT_PROVIDER_MODELS } from '../data/models';
+import { PROVIDERS_META, DEFAULT_PROVIDER_MODELS, getOpenRouterModels } from '../data/models';
 import { Avatar } from './Avatar';
 
 interface DesktopHeaderProps {
   activeAgent: AgentProfile;
-  onSwitchAgent: (id: AgentId) => void;
+  onOpenQuickSwitcher: () => void;
   onOpenSettings: () => void;
   selectedModel: AgentModelSelection;
   onSelectModel: (selection: AgentModelSelection) => void;
   providers: Record<ProviderId, ProviderSettings>;
-  openRouterFreeOnly: boolean;
-  onToggleFreeOnly: () => void;
+  openRouterModels: ModelOption[];
+  isFetchingOpenRouter: boolean;
+  openRouterError: string;
+  onRefreshOpenRouter: () => void;
   ollamaModels: ModelOption[];
   isFetchingOllama: boolean;
   onRefreshOllama: () => void;
@@ -34,13 +36,12 @@ interface DesktopHeaderProps {
 
 export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
   activeAgent,
-  onSwitchAgent,
+  onOpenQuickSwitcher,
   onOpenSettings,
   selectedModel,
   onSelectModel,
   providers,
-  openRouterFreeOnly,
-  onToggleFreeOnly,
+  openRouterModels, isFetchingOpenRouter, openRouterError, onRefreshOpenRouter,
   ollamaModels,
   isFetchingOllama,
   onRefreshOllama,
@@ -49,8 +50,6 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const isHanex = activeAgent.id === 'hanex';
-  const otherAgentId: AgentId = isHanex ? 'shumex' : 'hanex';
-  const otherAgent = AGENTS[otherAgentId];
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -73,25 +72,25 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
         return <Cpu className="w-3.5 h-3.5 text-amber-400" />;
       case 'openrouter':
         return <Globe className="w-3.5 h-3.5 text-purple-400" />;
+      case 'custom':
+        return <Globe className="w-3.5 h-3.5 text-purple-400" />;
       case 'ollama':
         return <HardDrive className="w-3.5 h-3.5 text-orange-400" />;
     }
   };
 
   // Build model list for enabled providers
-  const enabledProvidersList = (['gemini', 'openai', 'anthropic', 'openrouter', 'ollama'] as ProviderId[]).filter(
+  const enabledProvidersList = (['gemini', 'openai', 'anthropic', 'openrouter', 'ollama', 'custom'] as ProviderId[]).filter(
     (p) => providers[p]?.enabled
   );
 
   const getModelsForProvider = (p: ProviderId): ModelOption[] => {
+    if (p === 'custom') { const model = providers.custom?.customModel?.trim(); return model ? [{ id: model, name: model, provider: 'custom' }] : []; }
     if (p === 'ollama') {
       return ollamaModels.length > 0 ? ollamaModels : DEFAULT_PROVIDER_MODELS.ollama;
     }
-    const list = DEFAULT_PROVIDER_MODELS[p] || [];
-    if (p === 'openrouter' && openRouterFreeOnly) {
-      return list.filter((m) => m.isFree);
-    }
-    return list;
+    if (p === 'openrouter') return getOpenRouterModels(providers.openrouter?.openRouterModelId, openRouterModels, selectedModel.provider === 'openrouter' ? selectedModel.model : undefined);
+    return DEFAULT_PROVIDER_MODELS[p] || [];
   };
 
   // Find current model's display name
@@ -101,33 +100,8 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
   const currentModelDisplayName = currentModelOption?.name || selectedModel.model;
 
   return (
-    <header className="h-14 px-4 bg-[#080d17]/95 border-b border-white/10 flex items-center justify-between select-none backdrop-blur-md relative z-30">
-      {/* Left: Window Controls / Mac style traffic lights */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-1.5 mr-2">
-          <span className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e]/50 cursor-pointer shadow-sm hover:opacity-80 transition" title="Close" />
-          <span className="w-3 h-3 rounded-full bg-[#ffbd2e] border border-[#dea123]/50 cursor-pointer shadow-sm hover:opacity-80 transition" title="Minimize" />
-          <span className="w-3 h-3 rounded-full bg-[#27c93f] border border-[#1aab29]/50 cursor-pointer shadow-sm hover:opacity-80 transition" title="Maximize" />
-        </div>
-        <div className="h-4 w-[1px] bg-white/10 hidden sm:block" />
-        <span className="text-xs font-semibold text-slate-300 hidden sm:inline tracking-tight">
-          Hanex &amp; Shumex
-        </span>
-      </div>
-
-      {/* Center: Active Agent Status Pill */}
-      <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.04] border border-white/10 shadow-inner">
-        <Avatar agentId={activeAgent.id} size="xs" showStatus={true} status="online" />
-        <span className="text-xs font-bold text-white tracking-tight">{activeAgent.name}</span>
-        <span className="text-slate-500 text-[10px]">•</span>
-        <span
-          className={`text-[11px] font-medium hidden md:inline ${
-            isHanex ? 'text-cyan-400' : 'text-pink-400'
-          }`}
-        >
-          {activeAgent.roleTitle}
-        </span>
-      </div>
+    <header className="app-header">
+      <div className="header-intro"><span className="header-sparkle">✳</span><span>YOUR SPACE TO THINK <b> / </b> <strong>Chat</strong></span></div>
 
       {/* Right: Model Dropdown & Quick Switch */}
       <div className="flex items-center gap-2 relative">
@@ -158,7 +132,7 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
           {/* Popover Dropdown Menu */}
           {isDropdownOpen && (
             <div
-              className={`absolute right-0 top-full mt-2 w-80 sm:w-96 rounded-2xl bg-[#0c1220] border border-white/15 shadow-2xl overflow-hidden z-50 backdrop-blur-2xl flex flex-col max-h-[80vh] ${
+              className={`absolute right-0 top-full mt-2 w-[min(20rem,85vw)] sm:w-96 rounded-2xl bg-[#0c1220] border border-white/15 shadow-2xl overflow-hidden z-50 backdrop-blur-2xl flex flex-col max-h-[80vh] ${
                 isHanex ? 'shadow-cyan-950/50' : 'shadow-pink-950/50'
               }`}
             >
@@ -194,18 +168,8 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
               {(providers.openrouter?.enabled || providers.ollama?.enabled) && (
                 <div className="px-3 py-2 border-b border-white/5 bg-white/[0.02] flex items-center justify-between gap-2 text-xs">
                   {providers.openrouter?.enabled && (
-                    <button
-                      onClick={onToggleFreeOnly}
-                      className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-medium border transition cursor-pointer ${
-                        openRouterFreeOnly
-                          ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
-                          : 'bg-white/5 text-slate-400 border-white/5 hover:text-slate-200'
-                      }`}
-                      title="Show only free tier models on OpenRouter"
-                    >
-                      <Filter className="w-3 h-3" />
-                      <span>Free Models Only</span>
-                      {openRouterFreeOnly && <Check className="w-3 h-3 ml-0.5 text-purple-400" />}
+                    <button type="button" onClick={onRefreshOpenRouter} disabled={isFetchingOpenRouter} className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] bg-purple-500/10 text-purple-300 border border-purple-500/20 disabled:opacity-50" title="Refresh live free OpenRouter models">
+                      <RefreshCw className={`w-3 h-3 ${isFetchingOpenRouter ? 'animate-spin' : ''}`} /> {isFetchingOpenRouter ? 'Loading…' : 'Refresh free models'}
                     </button>
                   )}
 
@@ -223,6 +187,7 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
                 </div>
               )}
 
+              {openRouterError && providers.openrouter?.enabled && <p role="status" className="px-3 py-2 text-xs text-amber-300">{openRouterError}</p>}
               {/* Models List grouped by Provider */}
               <div className="overflow-y-auto p-2 space-y-3 flex-1 text-xs">
                 {enabledProvidersList.length === 0 ? (
@@ -240,7 +205,7 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
                   </div>
                 ) : (
                   enabledProvidersList.map((p) => {
-                    const meta = PROVIDERS_META[p];
+                    const meta = p === 'custom' && providers.custom?.customName ? { ...PROVIDERS_META[p], name: providers.custom.customName } : PROVIDERS_META[p];
                     const models = getModelsForProvider(p);
 
                     return (
@@ -340,25 +305,11 @@ export const DesktopHeader: React.FC<DesktopHeaderProps> = ({
           )}
         </div>
 
-        {/* Switch Agent Button */}
-        <button
-          onClick={() => onSwitchAgent(otherAgentId)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer shadow-md ${
-            isHanex
-              ? 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20'
-              : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30 hover:bg-cyan-500/20'
-          }`}
-          title={`Switch to ${otherAgent.name}`}
-        >
-          <ArrowLeftRight className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Talk to {otherAgent.name}</span>
-          <span className="sm:hidden">{otherAgent.name}</span>
-        </button>
-
+        <button onClick={onOpenQuickSwitcher} className="header-settings" title="Quick switcher" aria-label="Quick switcher"><Search className="w-4 h-4" /></button>
         {/* Settings button */}
         <button
           onClick={onOpenSettings}
-          className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition cursor-pointer border border-white/5"
+          className="header-settings"
           title="Open Settings &amp; Models"
         >
           <Settings className="w-4 h-4" />

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, KeyboardEvent } from 'react';
-import { Send, Square, Sparkles, CornerDownLeft, Eraser } from 'lucide-react';
+import { Send, Square, Sparkles, Eraser, Mic } from 'lucide-react';
+import '../../electron/voice-recorder.js';
 import { AgentProfile } from '../types';
 
 interface ChatInputProps {
@@ -7,6 +8,8 @@ interface ChatInputProps {
   onSend: (text: string) => void;
   onStop?: () => void;
   isGenerating: boolean;
+  sendVoiceImmediately: boolean;
+  onVoicePhaseChange?: (phase: VoicePhase) => void;
   onSelectPrompt: (prompt: string) => void;
 }
 
@@ -15,11 +18,49 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onSend,
   onStop,
   isGenerating,
+  sendVoiceImmediately,
+  onVoicePhaseChange,
   onSelectPrompt,
 }) => {
   const [text, setText] = useState('');
   const [showPromptsMenu, setShowPromptsMenu] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>('idle');
+  const [voiceError, setVoiceError] = useState('');
+  const voiceRef = useRef<ReturnType<typeof window.MexVoice.createVoiceRecorder> | null>(null);
+  const latest = useRef({ onSend, isGenerating, sendVoiceImmediately, onVoicePhaseChange });
+  latest.current = { onSend, isGenerating, sendVoiceImmediately, onVoicePhaseChange };
+  useEffect(() => {
+    const voice = window.MexVoice.createVoiceRecorder({
+      transcribe: async (blob, signal) => {
+        const response = await fetch('/api/voice/transcribe', { method: 'POST', headers: { 'Content-Type': blob.type }, body: blob, signal });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || 'Transcription failed.');
+        return body.text;
+      },
+      onState: phase => { setVoicePhase(phase); latest.current.onVoicePhaseChange?.(phase); },
+      onError: setVoiceError,
+      onResult: transcript => {
+        if (latest.current.sendVoiceImmediately && !latest.current.isGenerating) latest.current.onSend(transcript);
+        else {
+          setText(previous => [previous.trim(), transcript].filter(Boolean).join(' '));
+          if (latest.current.sendVoiceImmediately && latest.current.isGenerating) setVoiceError('A response is in progress; the transcript was kept in the message box.');
+          textareaRef.current?.focus();
+        }
+      },
+    });
+    voiceRef.current = voice;
+    const offHidden = window.islandChat?.onHidden(() => {
+      if (voice.getState() !== 'idle') { voice.dispose(); setVoicePhase('idle'); latest.current.onVoicePhaseChange?.('idle'); setVoiceError('Voice input stopped when the chat was hidden.'); }
+    });
+    return () => { offHidden?.(); voice.dispose(); voiceRef.current = null; };
+  }, []);
+  const toggleVoice = () => {
+    setVoiceError('');
+    if (voicePhase === 'recording') voiceRef.current?.stop();
+    else if (voicePhase === 'idle') void voiceRef.current?.start();
+  };
 
   const isHanex = agent.id === 'hanex';
 
@@ -97,101 +138,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         </div>
       )}
 
-      {/* Main Desktop Input Container */}
-      <div
-        className={`relative rounded-2xl backdrop-blur-xl border transition-all duration-300 shadow-2xl ${
-          isHanex
-            ? 'bg-[#0f172a]/90 border-cyan-500/30 focus-within:border-cyan-400 focus-within:shadow-[0_0_25px_-5px_rgba(6,182,212,0.35)]'
-            : 'bg-[#18111e]/90 border-pink-500/30 focus-within:border-pink-400 focus-within:shadow-[0_0_25px_-5px_rgba(244,63,94,0.35)]'
-        }`}
-      >
-        <div className="p-3">
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={`Message ${agent.name} (${isHanex ? 'calm & practical' : 'warm & creative'})...`}
-            rows={1}
-            className="w-full bg-transparent text-slate-100 placeholder:text-slate-500 focus:outline-none resize-none text-[14px] leading-relaxed max-h-[180px] min-h-[44px] py-1 px-1"
-          />
-
-          {/* Action Toolbar */}
-          <div className="flex items-center justify-between pt-2 border-t border-white/5 mt-1">
-            <div className="flex items-center gap-1.5">
-              {/* Starters suggestions toggle */}
-              <button
-                type="button"
-                onClick={() => setShowPromptsMenu((prev) => !prev)}
-                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-medium transition cursor-pointer border ${
-                  showPromptsMenu
-                    ? isHanex
-                      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
-                      : 'bg-pink-500/20 text-pink-300 border-pink-500/40'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5 border-transparent'
-                }`}
-                title="Ideas & Starters"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Starters</span>
-              </button>
-
-              {/* Clear draft */}
-              {text.trim().length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setText('')}
-                  className="p-1.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-white/5 transition cursor-pointer"
-                  title="Clear text"
-                >
-                  <Eraser className="w-3.5 h-3.5" />
-                </button>
-              )}
-
-              <span className="text-[11px] text-slate-500 hidden md:inline ml-2 select-none">
-                Shift + Enter for new line
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {text.length > 0 && (
-                <span className="text-[10px] text-slate-500 select-none">
-                  {text.length} chars
-                </span>
-              )}
-
-              {/* Stop Button when streaming */}
-              {isGenerating ? (
-                <button
-                  type="button"
-                  onClick={onStop}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600/80 hover:bg-rose-500 text-white font-medium text-xs transition cursor-pointer shadow-md shadow-rose-950/40"
-                  title="Stop generating"
-                >
-                  <Square className="w-3.5 h-3.5 fill-current" />
-                  <span>Stop</span>
-                </button>
-              ) : (
-                /* Send Button */
-                <button
-                  type="button"
-                  onClick={handleSubmit}
-                  disabled={!text.trim()}
-                  className={`flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-white transition-all duration-200 cursor-pointer shadow-lg disabled:opacity-40 disabled:cursor-not-allowed ${
-                    isHanex
-                      ? 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 shadow-cyan-950/40 active:scale-95'
-                      : 'bg-gradient-to-r from-rose-500 to-pink-600 hover:from-rose-400 hover:to-pink-500 shadow-pink-950/40 active:scale-95'
-                  }`}
-                  title="Send message (Enter)"
-                >
-                  <span>Send</span>
-                  <Send className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
+      <div className="composer">
+        <button type="button" onClick={() => setShowPromptsMenu(prev => !prev)} className="composer-ideas" title="Ideas & Starters" aria-label="Ideas and starters"><Sparkles size={18} /></button>
+        <textarea ref={textareaRef} value={text} onChange={e => setText(e.target.value)} onKeyDown={handleKeyDown} placeholder={`Message ${agent.name}...`} rows={1} aria-label={`Message ${agent.name}`} />
+        <button type="button" onClick={toggleVoice} disabled={voicePhase === 'requesting' || voicePhase === 'transcribing'} className={`composer-ideas ${voicePhase === 'recording' ? 'voice-listening' : ''}`} title={voicePhase === 'recording' ? 'Stop recording' : 'Record voice command'} aria-label={voicePhase === 'recording' ? 'Stop recording' : 'Record voice command'} aria-pressed={voicePhase === 'recording'}><Mic size={18} /></button>
+        {text.trim() && <button type="button" onClick={() => setText('')} className="composer-clear" title="Clear text" aria-label="Clear text"><Eraser size={16} /></button>}
+        {isGenerating ? <button type="button" onClick={onStop} className="composer-send" title="Stop generating"><Square size={15} fill="currentColor" /><span>Stop</span></button> : <button type="button" onClick={handleSubmit} disabled={!text.trim()} className="composer-send" title="Send message (Enter)"><span>Send</span><Send size={16} /></button>}
       </div>
+      {(voicePhase !== 'idle' || voiceError) && <div role="status" className="composer-hint">{voiceError || (voicePhase === 'recording' ? '● Listening… tap the mic to stop' : voicePhase === 'transcribing' ? 'Transcribing with Gemini…' : 'Requesting microphone…')}</div>}
+      <div className="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</div>
     </div>
   );
 };

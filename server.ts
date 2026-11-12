@@ -1,57 +1,100 @@
 import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
+import type { Server } from 'http';
+import { randomUUID } from 'node:crypto';
+import { getFreeOpenRouterModels, openRouterSupportsTools, openRouterSupportsImages } from './server/openrouter';
+import { executeWeb } from './server/web-tools';
+import { runToolModel } from './server/model-tools';
+import { AGENT_SYSTEM_PROMPTS } from './server/prompts';
 import { GoogleGenAI } from '@google/genai';
-
-dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+// Electron supplies its app/resource directory; the web server keeps using its own directory.
+const projectRoot = path.resolve(process.env.MEXAI_APP_ROOT || __dirname);
+dotenv.config({ path: path.join(projectRoot, '.env') });
 
 const app = express();
-// AI Studio dev server runs on port 3000. In production containers, use process.env.PORT.
-const PORT = process.env.NODE_ENV === 'production' ? (Number(process.env.PORT) || 8080) : 3000;
+// Preserve the web defaults; Electron supplies a fixed loopback port and host.
+const PORT = Number(process.env.MEXAI_PORT) || (process.env.NODE_ENV === 'production' ? (Number(process.env.PORT) || 8080) : 3000);
+const HOST = process.env.MEXAI_HOST || '0.0.0.0';
 
 app.use(express.json({ limit: '10mb' }));
 
-const AGENT_SYSTEM_PROMPTS = {
-  hanex: `You are Hanex, a calm, practical, and highly capable desktop AI companion.
-Personality & Demeanor:
-- Tone: Calm, measured, structured, and reliable.
-- Perspective: Practical, analytical, level-headed, and solution-focused.
-- Formatting: Clean, well-structured markdown with bullet points, numbered steps, or code blocks where appropriate.
-- Quirks & Dynamic: You are the logical counterpart to Shumex (who is warm, artistic, and whimsical). You speak with quiet confidence, precision, and supportive clarity. Avoid excessive exclamation marks; keep it sharp and genuinely useful.`,
+export type ProviderType = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'custom';
 
-  shumex: `You are Shumex, a warm, vibrant, and imaginative desktop AI companion.
-Personality & Demeanor:
-- Tone: Warm, energetic, empathetic, encouraging, and creatively inspiring.
-- Perspective: Creative, human-centered, inventive, aesthetic, and rich with vivid metaphors and sparks of curiosity.
-- Formatting: Engaging, expressive markdown with uplifting phrasing, creative perspectives, and thoughtful ideas.
-- Quirks & Dynamic: You are the creative counterpart to Hanex (who is calm, grounded, and practical). You bring heart, style, brainstorming vitality, and playful insight to whatever the user is working on.`
-};
+function redact(value: string, secret?: string): string { return secret ? value.split(secret).join('[redacted]') : value; }
+function redactValue(value: unknown, secret: string): unknown {
+  if (typeof value === 'string') return redact(value, secret);
+  if (Array.isArray(value)) return value.map(item => redactValue(item, secret));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactValue(item, secret)]));
+  return value;
+}
 
-export type ProviderType = 'gemini' | 'openai' | 'anthropic' | 'openrouter' | 'ollama';
-
-function formatErrorMessage(err: any): string {
+function formatErrorMessage(err: any, secret?: string): string {
   if (!err) return 'Unknown error occurred.';
   let message = err.message || String(err);
   try {
     const parsed = JSON.parse(message);
     if (parsed.error?.message) {
-      return parsed.error.message;
+      return secret ? String(parsed.error.message).split(secret).join('[redacted]') : parsed.error.message;
     }
     if (parsed.error && typeof parsed.error === 'string') {
-      return parsed.error;
+      return secret ? parsed.error.split(secret).join('[redacted]') : parsed.error;
     }
   } catch (jsonErr) {
-    console.warn('formatErrorMessage: Failed to parse error JSON payload:', jsonErr);
+    // Ordinary error messages are not JSON.
   }
-  return message;
+  return secret ? String(message).split(secret).join('[redacted]') : message;
 }
 
-function resolveApiKey(provider: ProviderType, customKey?: string): string {
-  const custom = customKey?.trim();
+const keyPort = (process as any).parentPort;
+const pendingTools = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+async function desktopTool(action: string, call?: unknown, signal?: AbortSignal): Promise<any> {
+  if (!keyPort || process.env.MEXAI_SECURE_KEYS !== '1') throw new Error('Desktop tool service is unavailable.');
+  const id = randomUUID();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('Tool request cancelled.')); return; }
+    const cancel = () => { keyPort.postMessage({ type:'tool-cancel', id }); pendingTools.delete(id); clearTimeout(timer); reject(new Error('Tool request cancelled.')); };
+    const timer = setTimeout(() => { keyPort.postMessage({ type:'tool-cancel', id }); pendingTools.delete(id); signal?.removeEventListener('abort', cancel); reject(new Error('Tool service timed out.')); }, action === 'list' ? 10_000 : 600_000);
+    signal?.addEventListener('abort', cancel, { once:true });
+    pendingTools.set(id, { resolve: value => { signal?.removeEventListener('abort', cancel); resolve(value); }, reject: error => { signal?.removeEventListener('abort', cancel); reject(error); }, timer });
+    keyPort.postMessage({ type: 'tool-request', id, action, call });
+  });
+}
+const pendingKeys = new Map<string, { resolve: (key: string) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+if (process.env.MEXAI_SECURE_KEYS === '1' && keyPort) {
+  keyPort.on('message', (event: any) => {
+    const message = event.data;
+    if (message?.type === 'tool-response') {
+      const pending = pendingTools.get(message.id); if (!pending) return;
+      pendingTools.delete(message.id); clearTimeout(pending.timer);
+      if (message.error) pending.reject(new Error(message.error)); else pending.resolve(message.value);
+      return;
+    }
+    if (message?.type !== 'secure-key-response') return;
+    const pending = pendingKeys.get(message.id);
+    if (!pending) return;
+    pendingKeys.delete(message.id);
+    clearTimeout(pending.timer);
+    if (message.error) pending.reject(new Error('Secure key storage is unavailable.'));
+    else pending.resolve(typeof message.key === 'string' ? message.key : '');
+  });
+}
+async function secureKey(provider: ProviderType, endpoint = false): Promise<string> {
+  if (!keyPort) throw new Error('Secure key storage is unavailable.');
+  const id = randomUUID();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { pendingKeys.delete(id); reject(new Error('Secure key storage timed out.')); }, 5000);
+    pendingKeys.set(id, { resolve, reject, timer });
+    keyPort.postMessage({ type: endpoint ? 'secure-endpoint-request' : 'secure-key-request', id, provider });
+  });
+}
+async function resolveApiKey(provider: ProviderType, customKey?: string): Promise<string> {
+  const custom = process.env.MEXAI_SECURE_KEYS === '1' && provider !== 'ollama'
+    ? await secureKey(provider) : customKey?.trim();
   if (custom) return custom;
 
   switch (provider) {
@@ -59,6 +102,8 @@ function resolveApiKey(provider: ProviderType, customKey?: string): string {
       return process.env.GEMINI_API_KEY?.trim() || '';
     case 'openai':
       return process.env.OPENAI_API_KEY?.trim() || '';
+    case 'custom':
+      return process.env.CUSTOM_API_KEY?.trim() || '';
     case 'anthropic':
       return process.env.ANTHROPIC_API_KEY?.trim() || '';
     case 'openrouter':
@@ -79,11 +124,46 @@ app.get('/api/status', (_req: Request, res: Response) => {
     envKeys: {
       gemini: Boolean(process.env.GEMINI_API_KEY?.trim()),
       openai: Boolean(process.env.OPENAI_API_KEY?.trim()),
+      custom: Boolean(process.env.CUSTOM_API_KEY?.trim()),
       anthropic: Boolean(process.env.ANTHROPIC_API_KEY?.trim()),
       openrouter: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
       ollama: true, // Always testable locally
     },
   });
+});
+
+// Audio is processed in memory and sent only to Gemini; the key never reaches a renderer.
+app.post('/api/voice/transcribe', express.raw({ type: ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav'], limit: '4mb' }), async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const mime = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (!['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/wav'].includes(mime)) { res.status(415).json({ error: 'Unsupported audio format.' }); return; }
+  if (!Buffer.isBuffer(req.body) || !req.body.length) { res.status(400).json({ error: 'No audio was recorded.' }); return; }
+  let key = '';
+  try {
+    key = await resolveApiKey('gemini');
+    if (!key) { res.status(400).json({ error: 'Add a Gemini API key in Settings to transcribe voice.' }); return; }
+    const ai = new GoogleGenAI({ apiKey: key });
+    const result = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [{ role: 'user', parts: [
+        { text: 'Transcribe the speech in this audio exactly. Return only the transcript, without commentary. If there is no intelligible speech, return an empty response.' },
+        { inlineData: { mimeType: mime, data: req.body.toString('base64') } },
+      ] }],
+      config: { abortSignal: AbortSignal.timeout(60_000) },
+    });
+    const text = redact(result.text?.trim() || '', key);
+    if (!text) { res.status(422).json({ error: 'No speech was detected.' }); return; }
+    res.json({ text: text.slice(0, 10000) });
+  } catch (error) {
+    console.warn('Voice transcription failed.');
+    res.status(502).json({ error: `Gemini transcription failed: ${formatErrorMessage(error, key).slice(0, 300)}` });
+  }
+});
+
+// OpenRouter's public catalog; only verified zero-priced models are returned.
+app.get('/api/providers/openrouter/models', async (req: Request, res: Response) => {
+  try { res.json({ models: await getFreeOpenRouterModels(req.query.refresh === '1') }); }
+  catch { res.status(502).json({ error: 'Could not load the OpenRouter model catalog. Please try refreshing.' }); }
 });
 
 // Fetch installed Ollama models
@@ -122,7 +202,9 @@ app.post('/api/providers/ollama/models', async (req: Request, res: Response) => 
 app.post('/api/providers/test', async (req: Request, res: Response) => {
   const { provider, apiKey, baseUrl, model } = req.body;
   const p = (provider || 'gemini') as ProviderType;
-  const resolvedKey = resolveApiKey(p, apiKey);
+  let resolvedKey: string;
+  try { resolvedKey = await resolveApiKey(p, apiKey); }
+  catch { res.status(503).json({ valid: false, error: 'Secure key storage is unavailable.' }); return; }
 
   if (p !== 'ollama' && !resolvedKey) {
     res.status(400).json({
@@ -142,12 +224,15 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
         model: model || 'gemini-3.8-flash',
         contents: 'Ping test. Reply with OK.',
       });
-      res.json({ valid: true, reply: result.text?.trim() || 'OK', model: model || 'gemini-3.8-flash' });
+      res.json({ valid: true, reply: redact(result.text?.trim() || 'OK', resolvedKey), model: model || 'gemini-3.8-flash' });
       return;
     }
 
-    if (p === 'openai') {
-      const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    if (p === 'openai' || p === 'custom') {
+      if (p === 'custom' && (typeof model !== 'string' || !model.trim())) throw new Error('Enter a custom model name in Settings.');
+      const endpoint = p === 'custom' ? await customEndpoint() : 'https://api.openai.com/v1';
+      const resp = await fetch(`${endpoint}/chat/completions`, {
+        redirect: 'error',
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${resolvedKey}`,
@@ -164,7 +249,7 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
         throw new Error(errJson.error?.message || `OpenAI returned status ${resp.status}`);
       }
       const data: any = await resp.json();
-      res.json({ valid: true, reply: data.choices?.[0]?.message?.content?.trim() || 'OK', model: model || 'gpt-4o-mini' });
+      res.json({ valid: true, reply: redact(data.choices?.[0]?.message?.content?.trim() || 'OK', resolvedKey), model: model || 'gpt-4o-mini' });
       return;
     }
 
@@ -187,7 +272,7 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
         throw new Error(errJson.error?.message || `Anthropic returned status ${resp.status}`);
       }
       const data: any = await resp.json();
-      const reply = data.content?.[0]?.text?.trim() || 'OK';
+      const reply = redact(data.content?.[0]?.text?.trim() || 'OK', resolvedKey);
       res.json({ valid: true, reply, model: model || 'claude-3-5-haiku-20241022' });
       return;
     }
@@ -202,7 +287,7 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: model || 'meta-llama/llama-3.3-70b-instruct:free',
+          model: model || 'openrouter/free',
           messages: [{ role: 'user', content: 'Ping test. Reply with OK.' }],
           max_tokens: 10,
         }),
@@ -214,8 +299,8 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
       const data: any = await resp.json();
       res.json({
         valid: true,
-        reply: data.choices?.[0]?.message?.content?.trim() || 'OK',
-        model: model || 'meta-llama/llama-3.3-70b-instruct:free',
+        reply: redact(data.choices?.[0]?.message?.content?.trim() || 'OK', resolvedKey),
+        model: model || 'openrouter/free',
       });
       return;
     }
@@ -238,18 +323,19 @@ app.post('/api/providers/test', async (req: Request, res: Response) => {
 
     res.status(400).json({ valid: false, error: `Unsupported provider: ${provider}` });
   } catch (err: any) {
-    console.warn(`Test connection failed for ${p}:`, err);
+    console.warn(`Test connection failed for ${p}.`);
     res.status(400).json({
       valid: false,
-      error: formatErrorMessage(err),
+      error: formatErrorMessage(err, resolvedKey),
     });
   }
 });
 
 // Legacy validate-key endpoint (compatibility with existing UI)
 app.post('/api/validate-key', async (req: Request, res: Response) => {
-  const customKey = req.body.apiKey?.trim();
-  const keyToTest = customKey || process.env.GEMINI_API_KEY;
+  let keyToTest: string;
+  try { keyToTest = await resolveApiKey('gemini', req.body.apiKey); }
+  catch { res.status(503).json({ valid: false, error: 'Secure key storage is unavailable.' }); return; }
 
   if (!keyToTest) {
     res.status(400).json({ valid: false, error: 'No API key provided to test.' });
@@ -265,11 +351,11 @@ app.post('/api/validate-key', async (req: Request, res: Response) => {
       model: 'gemini-3.8-flash',
       contents: 'Ping test. Reply with simply "OK".',
     });
-    res.json({ valid: true, reply: result.text?.trim() || 'OK' });
+    res.json({ valid: true, reply: redact(result.text?.trim() || 'OK', keyToTest) });
   } catch (err: any) {
     res.status(400).json({
       valid: false,
-      error: formatErrorMessage(err),
+      error: formatErrorMessage(err, keyToTest),
     });
   }
 });
@@ -283,7 +369,8 @@ async function* streamGemini(
   apiKey: string,
   modelName: string,
   messages: any[],
-  systemInstruction: string
+  systemInstruction: string,
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
   const ai = new GoogleGenAI({
     apiKey,
@@ -299,26 +386,11 @@ async function* streamGemini(
     formattedContents.push({ role: 'user', parts: [{ text: 'Hello!' }] });
   }
 
-  let responseStream;
-  try {
-    responseStream = await ai.models.generateContentStream({
-      model: modelName,
-      contents: formattedContents,
-      config: { systemInstruction },
-    });
-  } catch (err: any) {
-    const msg = String(err?.message || '');
-    if (msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE')) {
-      await new Promise((r) => setTimeout(r, 600));
-      responseStream = await ai.models.generateContentStream({
-        model: 'gemini-3.1-flash-lite',
-        contents: formattedContents,
-        config: { systemInstruction },
-      });
-    } else {
-      throw err;
-    }
-  }
+  const responseStream = await ai.models.generateContentStream({
+    model: modelName,
+    contents: formattedContents,
+    config: { systemInstruction, abortSignal: signal },
+  });
 
   let chunkCount = 0;
   for await (const chunk of responseStream) {
@@ -337,12 +409,28 @@ async function* streamGemini(
   }
 }
 
+class ProviderHttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
+}
+
+async function customEndpoint(): Promise<string> {
+  const endpoint = process.env.MEXAI_SECURE_KEYS === '1' ? await secureKey('custom', true) : (process.env.CUSTOM_BASE_URL || '');
+  if (!endpoint) throw new Error('Configure the custom endpoint in Settings first.');
+  let url: URL;
+  try { url = new URL(endpoint); } catch { throw new Error('Invalid custom endpoint.'); }
+  if (url.username || url.password || url.search || url.hash || !(url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) throw new Error('Custom endpoint must use HTTPS or localhost HTTP.');
+  return url.toString().replace(/\/+$/, '');
+}
+
 // OpenAI Stream
 async function* streamOpenAI(
   apiKey: string,
   modelName: string,
   messages: any[],
-  systemInstruction: string
+  systemInstruction: string,
+  endpoint = 'https://api.openai.com/v1',
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
   const formattedMessages = [
     { role: 'system', content: systemInstruction },
@@ -352,7 +440,9 @@ async function* streamOpenAI(
     })),
   ];
 
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+  const resp = await fetch(`${endpoint}/chat/completions`, {
+    signal,
+    redirect: 'error',
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -367,13 +457,15 @@ async function* streamOpenAI(
 
   if (!resp.ok) {
     const errJson: any = await resp.json().catch(() => ({}));
-    throw new Error(errJson.error?.message || `OpenAI error: HTTP ${resp.status}`);
+    throw new ProviderHttpError(resp.status, errJson.error?.message || `OpenAI error: HTTP ${resp.status}`);
   }
 
   if (!resp.body) throw new Error('No readable response body from OpenAI.');
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let completed = false;
+  let hadContent = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -384,18 +476,18 @@ async function* streamOpenAI(
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed || trimmed === 'data: [DONE]') continue;
+      if (!trimmed) continue;
+      if (trimmed === 'data: [DONE]') { completed = true; continue; }
       if (trimmed.startsWith('data: ')) {
-        try {
-          const parsed = JSON.parse(trimmed.slice(6));
-          const content = parsed.choices?.[0]?.delta?.content;
-          if (content) yield content;
-        } catch (err) {
-          console.warn('OpenAI stream JSON parse error:', err);
-        }
+        let parsed: any;
+        try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
+        if (parsed.error) throw new ProviderHttpError(Number(parsed.error.code) || 500, parsed.error.message || 'Provider stream error.');
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) { hadContent = true; yield content; }
       }
     }
   }
+  if (!completed) throw new Error(hadContent ? 'Stream ended before completion.' : 'Empty response.');
 }
 
 // Anthropic Claude Stream
@@ -403,7 +495,8 @@ async function* streamAnthropic(
   apiKey: string,
   modelName: string,
   messages: any[],
-  systemInstruction: string
+  systemInstruction: string,
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
   // Anthropic messages cannot contain 'system' role; pass system at top level
   const formattedMessages: { role: 'user' | 'assistant'; content: string }[] = [];
@@ -419,6 +512,7 @@ async function* streamAnthropic(
   }
 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    signal,
     method: 'POST',
     headers: {
       'x-api-key': apiKey,
@@ -436,13 +530,15 @@ async function* streamAnthropic(
 
   if (!resp.ok) {
     const errJson: any = await resp.json().catch(() => ({}));
-    throw new Error(errJson.error?.message || `Anthropic error: HTTP ${resp.status}`);
+    throw new ProviderHttpError(resp.status, errJson.error?.message || `Anthropic error: HTTP ${resp.status}`);
   }
 
   if (!resp.body) throw new Error('No readable response body from Anthropic.');
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let completed = false;
+  let hadContent = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -456,18 +552,16 @@ async function* streamAnthropic(
       for (const line of lines) {
         const trimmed = line.trim();
         if (trimmed.startsWith('data: ')) {
-          try {
-            const parsed = JSON.parse(trimmed.slice(6));
-            if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
-              yield parsed.delta.text;
-            }
-          } catch (err) {
-            console.warn('Anthropic stream parse error:', err);
-          }
+          let parsed: any;
+          try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
+          if (parsed.type === 'message_stop') completed = true;
+          if (parsed.type === 'error' || parsed.error) throw new ProviderHttpError(Number(parsed.error?.code) || 500, parsed.error?.message || 'Anthropic stream error.');
+          if (parsed.type === 'content_block_delta' && parsed.delta?.text) { hadContent = true; yield parsed.delta.text; }
         }
       }
     }
   }
+  if (!completed) throw new Error(hadContent ? 'Stream ended before completion.' : 'Empty response.');
 }
 
 // OpenRouter Stream
@@ -475,7 +569,8 @@ async function* streamOpenRouter(
   apiKey: string,
   modelName: string,
   messages: any[],
-  systemInstruction: string
+  systemInstruction: string,
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
   const formattedMessages = [
     { role: 'system', content: systemInstruction },
@@ -486,6 +581,7 @@ async function* streamOpenRouter(
   ];
 
   const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    signal,
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -502,72 +598,15 @@ async function* streamOpenRouter(
 
   if (!resp.ok) {
     const errJson: any = await resp.json().catch(() => ({}));
-    throw new Error(errJson.error?.message || `OpenRouter error: HTTP ${resp.status}`);
+    throw new ProviderHttpError(resp.status, errJson.error?.message || `OpenRouter error: HTTP ${resp.status}`);
   }
 
   if (!resp.body) throw new Error('No readable response body from OpenRouter.');
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed === 'data: [DONE]') continue;
-      if (trimmed.startsWith('data: ')) {
-        try {
-          const parsed = JSON.parse(trimmed.slice(6));
-          const content = parsed.choices?.[0]?.delta?.content;
-          if (content) yield content;
-        } catch (err) {
-          console.warn('OpenRouter stream parse error:', err);
-        }
-      }
-    }
-  }
-}
-
-// Ollama Stream
-async function* streamOllama(
-  baseUrl: string,
-  modelName: string,
-  messages: any[],
-  systemInstruction: string
-): AsyncGenerator<string> {
-  const host = (baseUrl || 'http://localhost:11434').replace(/\/+$/, '');
-  const formattedMessages = [
-    { role: 'system', content: systemInstruction },
-    ...messages.map((m: any) => ({
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: m.content,
-    })),
-  ];
-
-  const resp = await fetch(`${host}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: modelName || 'llama3.2',
-      messages: formattedMessages,
-      stream: true,
-    }),
-  });
-
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => '');
-    throw new Error(`Ollama error (${resp.status}): ${errText || 'Connection failed'}`);
-  }
-
-  if (!resp.body) throw new Error('No readable response body from Ollama.');
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
+  let completed = false;
+  let hadContent = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -579,16 +618,77 @@ async function* streamOllama(
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed.message?.content) {
-          yield parsed.message.content;
-        }
-      } catch (err) {
-        console.warn('Ollama stream parse error:', err);
+      if (trimmed === 'data: [DONE]') { completed = true; continue; }
+      if (trimmed.startsWith('data: ')) {
+        let parsed: any;
+        try { parsed = JSON.parse(trimmed.slice(6)); } catch { continue; }
+        if (parsed.error) throw new ProviderHttpError(Number(parsed.error.code) || 500, parsed.error.message || 'OpenRouter stream error.');
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) { hadContent = true; yield content; }
       }
     }
   }
+  if (!completed) throw new Error(hadContent ? 'Stream ended before completion.' : 'Empty response.');
+}
+
+// Ollama Stream
+async function* streamOllama(
+  baseUrl: string,
+  modelName: string,
+  messages: any[],
+  systemInstruction: string,
+  signal?: AbortSignal
+): AsyncGenerator<string> {
+  const host = (baseUrl || 'http://localhost:11434').replace(/\/+$/, '');
+  const formattedMessages = [
+    { role: 'system', content: systemInstruction },
+    ...messages.map((m: any) => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.content,
+    })),
+  ];
+
+  const resp = await fetch(`${host}/api/chat`, {
+    signal,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: modelName || 'llama3.2',
+      messages: formattedMessages,
+      stream: true,
+    }),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    throw new ProviderHttpError(resp.status, `Ollama error (${resp.status}): ${errText || 'Connection failed'}`);
+  }
+
+  if (!resp.body) throw new Error('No readable response body from Ollama.');
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let completed = false;
+  let hadContent = false;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let parsed: any;
+      try { parsed = JSON.parse(trimmed); } catch { continue; }
+      if (parsed.done) completed = true;
+      if (parsed.error) throw new Error(String(parsed.error));
+      if (parsed.message?.content) { hadContent = true; yield parsed.message.content; }
+    }
+  }
+  if (!completed) throw new Error(hadContent ? 'Stream ended before completion.' : 'Empty response.');
 }
 
 // Unified Stream Dispatcher
@@ -597,9 +697,10 @@ async function* streamProvider(
   model: string,
   messages: any[],
   systemInstruction: string,
-  providerConfig?: { apiKey?: string; baseUrl?: string }
+  providerConfig?: { apiKey?: string; baseUrl?: string },
+  key: string = '',
+  signal?: AbortSignal
 ): AsyncGenerator<string> {
-  const key = resolveApiKey(provider, providerConfig?.apiKey);
 
   if (provider !== 'ollama' && !key) {
     throw new Error(
@@ -609,84 +710,168 @@ async function* streamProvider(
 
   switch (provider) {
     case 'gemini':
-      yield* streamGemini(key, model || 'gemini-3.8-flash', messages, systemInstruction);
+      yield* streamGemini(key, model || 'gemini-3.8-flash', messages, systemInstruction, signal);
       break;
     case 'openai':
-      yield* streamOpenAI(key, model || 'gpt-4o', messages, systemInstruction);
+      yield* streamOpenAI(key, model || 'gpt-4o', messages, systemInstruction, undefined, signal);
+      break;
+    case 'custom':
+      if (!model?.trim()) throw new Error('Enter a custom model name in Settings.');
+      yield* streamOpenAI(key, model, messages, systemInstruction, await customEndpoint(), signal);
       break;
     case 'anthropic':
-      yield* streamAnthropic(key, model || 'claude-3-7-sonnet-20250219', messages, systemInstruction);
+      yield* streamAnthropic(key, model || 'claude-3-7-sonnet-20250219', messages, systemInstruction, signal);
       break;
     case 'openrouter':
-      yield* streamOpenRouter(key, model || 'meta-llama/llama-3.3-70b-instruct:free', messages, systemInstruction);
+      yield* streamOpenRouter(key, model || 'openrouter/free', messages, systemInstruction, signal);
       break;
     case 'ollama':
-      yield* streamOllama(providerConfig?.baseUrl || 'http://localhost:11434', model || 'llama3.2', messages, systemInstruction);
+      yield* streamOllama(providerConfig?.baseUrl || 'http://localhost:11434', model || 'llama3.2', messages, systemInstruction, signal);
       break;
     default:
       throw new Error(`Unsupported provider: ${provider}`);
   }
 }
 
-// Unified SSE Streaming Endpoint
+function isCredentialError(error: any): boolean {
+  const status = Number(error?.status ?? error?.statusCode ?? error?.code);
+  const message = formatErrorMessage(error).toLowerCase();
+  if (/\b(?:invalid|incorrect|missing|expired|revoked|unauthorized)\b.{0,40}\b(?:api[ -]?key|credential|token)\b|\b(?:api[ -]?key|credential|token)\b.{0,40}\b(?:invalid|incorrect|missing|expired|revoked|not valid)\b/.test(message)) return true;
+  return status === 401;
+}
+const DEFAULT_CHAT_MODELS: Record<ProviderType, string> = {
+  gemini: 'gemini-3.8-flash', openai: 'gpt-4o', anthropic: 'claude-3-7-sonnet-20250219',
+  openrouter: 'openrouter/free', ollama: 'llama3.2', custom: '',
+};
+
+// Each failed answer is replaced before the next model starts, never concatenated.
 app.post('/api/chat/stream', async (req: Request, res: Response) => {
   const { agentId, messages, provider, model, providerConfig, customKey } = req.body;
   const p = (provider || 'gemini') as ProviderType;
-  const agent = (agentId === 'shumex' ? 'shumex' : 'hanex') as 'hanex' | 'shumex';
-  const systemInstruction = AGENT_SYSTEM_PROMPTS[agent];
-
-  // Resolve config backwards compatible with customKey
-  const effectiveConfig = {
-    apiKey: providerConfig?.apiKey || customKey,
-    baseUrl: providerConfig?.baseUrl,
-  };
-
-  const key = resolveApiKey(p, effectiveConfig.apiKey);
-  if (p !== 'ollama' && !key) {
-    res.status(400).json({
-      error: `API key for ${p.toUpperCase()} is missing. Please add it in Settings.`,
-    });
-    return;
+  const systemInstruction = AGENT_SYSTEM_PROMPTS[agentId === 'shumex' ? 'shumex' : 'hanex'];
+  const supported = new Set(['gemini', 'openai', 'anthropic', 'openrouter', 'ollama', 'custom']);
+  const primary = { provider: p, model: typeof model === 'string' && model.trim() ? model.trim() : (DEFAULT_CHAT_MODELS[p] || ''), providerConfig: { apiKey: providerConfig?.apiKey || customKey, baseUrl: providerConfig?.baseUrl } };
+  const candidates = [primary];
+  const seen = new Set([`${p}:${primary.model}`]);
+  if (Array.isArray(req.body.fallbacks)) {
+    for (const item of req.body.fallbacks.slice(0, 20)) {
+      if (!item || !supported.has(item.provider) || typeof item.model !== 'string' || !item.model.trim() || item.model.length > 256) continue;
+      const id = `${item.provider}:${item.model.trim()}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      candidates.push({ provider: item.provider, model: item.model.trim(), providerConfig: { apiKey: undefined, baseUrl: item.baseUrl } });
+    }
   }
-
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-
-  try {
-    let totalTextLength = 0;
-    let chunkCount = 0;
-
-    const generator = streamProvider(p, model, messages || [], systemInstruction, effectiveConfig);
-
-    for await (const textChunk of generator) {
-      if (textChunk) {
-        chunkCount++;
-        totalTextLength += textChunk.length;
-        res.write(`data: ${JSON.stringify({ text: textChunk })}\n\n`);
+  const disconnect = new AbortController();
+  res.on('close', () => disconnect.abort());
+  const send = (value: object) => { if (!disconnect.signal.aborted) res.write(`data: ${JSON.stringify(value)}\n\n`); };
+  const tried: string[] = [];
+  let freeModels: Awaited<ReturnType<typeof getFreeOpenRouterModels>> | undefined;
+  let catalogError = false;
+  let addedFree = false;
+  let stoppedForKey = false;
+  let performedTool = false;
+  let allowedFolders: string[] = [];
+  if (process.env.MEXAI_SECURE_KEYS === '1' && keyPort) {
+    try { const result = await desktopTool('list'); if (Array.isArray(result)) allowedFolders = result.filter(item => typeof item === 'string'); } catch { /* tools unavailable; ordinary chat still works */ }
+  }
+  const toolDeadline = AbortSignal.timeout(600_000);
+  const retried = new Set<string>();
+  for (let index = 0; index < candidates.length && !disconnect.signal.aborted; index++) {
+    const candidate = candidates[index];
+    const label = `${candidate.provider} / ${candidate.model || '(default)'}`;
+    let key = '';
+    let reason = '';
+    let committed = false;
+    let candidateTimeout: AbortSignal | undefined;
+    try {
+      if (!supported.has(candidate.provider)) throw new Error('Unsupported provider.');
+      key = await resolveApiKey(candidate.provider, candidate.providerConfig.apiKey);
+      if (candidate.provider !== 'ollama' && !key) {
+        stoppedForKey = true;
+        throw new Error('Missing API key. Add it in Settings.');
+      }
+      let pending = '';
+      const timeout = candidateTimeout = (candidate.provider === 'gemini' || candidate.provider === 'openrouter') ? toolDeadline : AbortSignal.timeout(120_000);
+      const signal = AbortSignal.any([disconnect.signal, timeout]);
+      let toolCapable = candidate.provider === 'gemini';
+      if (candidate.provider === 'openrouter') {
+        try { toolCapable = await openRouterSupportsTools(candidate.model); } catch { toolCapable = false; }
+      }
+      if (toolCapable && (candidate.provider === 'gemini' || candidate.provider === 'openrouter')) {
+        send({ answeringModel: { provider: candidate.provider, model: candidate.model } });
+        const text = await runToolModel({ provider:candidate.provider, model:candidate.model, key, messages:messages || [], system:systemInstruction, folders:allowedFolders, signal, supportsBrowser:!!keyPort && process.env.MEXAI_SECURE_KEYS === '1', supportsImages: candidate.provider === 'gemini' || await openRouterSupportsImages(candidate.model).catch(() => false),
+          onProgress: message => send({ progress:message }),
+          onCard: card => { performedTool = true; send({ toolCard: redactValue(card, key) }); },
+          execute: async (call, signal) => call.name === 'fetch_webpage' || call.name === 'web_search' ? executeWeb(call, signal) : desktopTool('execute', call, signal),
+          executeBatch: async (calls, signal) => desktopTool('execute-batch', calls, signal),
+          onRejected: async (call, reason) => { if (keyPort && !['fetch_webpage','web_search'].includes(call.name)) await desktopTool('rejected', { name: call.name, reason }, signal); },
+        });
+        if (disconnect.signal.aborted) break;
+        if (!text.trim()) throw new Error('Empty response.');
+        send({ text: redact(text, key) }); send({ done:true }); res.end(); return;
+      }
+      const stream = streamProvider(candidate.provider, candidate.model, messages || [], systemInstruction, candidate.providerConfig, key, signal);
+      for await (const chunk of stream) {
+        if (disconnect.signal.aborted) break;
+        pending += chunk;
+        if (key && pending.includes(key)) pending = redact(pending, key);
+        if (!committed && pending.trim()) {
+          committed = true;
+          send({ answeringModel: { provider: candidate.provider, model: candidate.model } });
+        }
+        if (committed) {
+          const n = key ? Math.max(0, pending.length - key.length + 1) : pending.length;
+          if (n) { send({ text: pending.slice(0, n) }); pending = pending.slice(n); }
+        }
+      }
+      if (disconnect.signal.aborted) break;
+      if (!committed) throw new Error('Empty response.');
+      if (pending) send({ text: redact(pending, key) });
+      send({ done: true }); res.end(); return;
+    } catch (error: any) {
+      if (disconnect.signal.aborted) break;
+      let status = Number(error?.status ?? error?.statusCode ?? error?.code);
+      if (!status && typeof error?.message === 'string') {
+        try { status = Number(JSON.parse(error.message)?.error?.code); } catch { /* Not a JSON provider error. */ }
+      }
+      const detail = (candidateTimeout?.aborted || error?.name === 'TimeoutError' ? 'Request timed out.' : error?.name === 'AbortError' ? 'The provider aborted the request.' : formatErrorMessage(error, key)).replace(/\s+/g, ' ').slice(0, 300) || 'Request failed.';
+      reason = Number.isInteger(status) && status >= 400 && status <= 599 ? `HTTP ${status}: ${detail}` : detail;
+      if (isCredentialError(error)) stoppedForKey = true;
+      tried.push(`${label}: ${reason}`);
+      if (committed) send({ reset: true });
+      // Preserve the single retry for transient throttling, overload and empty replies.
+      const retryId = `${candidate.provider}:${candidate.model}`;
+      const transient = status === 429 || status === 503 || detail === 'Empty response.';
+      if (!stoppedForKey && !committed && !performedTool && transient && !retried.has(retryId)) {
+        retried.add(retryId);
+        candidates.splice(index + 1, 0, candidate);
+        continue;
       }
     }
-
-    console.log(`[Stream Complete] Provider: ${p}, Model: ${model}, Chunks: ${chunkCount}, TotalLength: ${totalTextLength}`);
-
-    if (totalTextLength === 0) {
-      console.warn(`[Stream Empty] Provider ${p} returned 0 text chunks.`);
-      res.write(
-        `data: ${JSON.stringify({
-          error: 'The model returned an empty response. Try again or switch the model in Settings',
-        })}\n\n`
-      );
-    } else {
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+    if (stoppedForKey || performedTool) break;
+    if (candidate.provider === 'openrouter' && !addedFree) {
+      try {
+        freeModels ||= await getFreeOpenRouterModels(true);
+        if (candidate.model === 'openrouter/free' || candidate.model.endsWith(':free') || freeModels.some(m => m.id === candidate.model)) {
+          addedFree = true;
+          for (const free of freeModels) {
+            const id = `openrouter:${free.id}`;
+            if (seen.has(id)) continue;
+            seen.add(id);
+            candidates.push({ provider: 'openrouter', model: free.id, providerConfig: { apiKey: undefined, baseUrl: undefined } });
+          }
+        }
+      } catch { catalogError = true; }
     }
-    res.end();
-  } catch (error: any) {
-    console.error(`Error in streaming chat [${p}]:`, error);
-    res.write(
-      `data: ${JSON.stringify({
-        error: formatErrorMessage(error),
-      })}\n\n`
-    );
+  }
+  if (!disconnect.signal.aborted && !res.writableEnded) {
+    const prefix = stoppedForKey ? 'Stopped: invalid or missing API key.' : 'No model could complete the request.';
+    const catalogNote = catalogError ? '\nCould not load the OpenRouter free-model catalog.' : '';
+    send({ error: `${prefix}\nTried:\n${tried.map(item => `• ${item}`).join('\n')}${catalogNote}` });
     res.end();
   }
 });
@@ -703,7 +888,9 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     baseUrl: providerConfig?.baseUrl,
   };
 
-  const key = resolveApiKey(p, effectiveConfig.apiKey);
+  let key: string;
+  try { key = await resolveApiKey(p, effectiveConfig.apiKey); }
+  catch { res.status(503).json({ error: 'Secure key storage is unavailable.' }); return; }
   if (p !== 'ollama' && !key) {
     res.status(400).json({
       error: `API key for ${p.toUpperCase()} is missing. Please add it in Settings.`,
@@ -713,7 +900,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
 
   try {
     let accumulatedText = '';
-    const generator = streamProvider(p, model, messages || [], systemInstruction, effectiveConfig);
+    const generator = streamProvider(p, model, messages || [], systemInstruction, effectiveConfig, key);
 
     for await (const textChunk of generator) {
       if (textChunk) {
@@ -729,20 +916,22 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     }
 
     res.json({
-      text: accumulatedText,
+      text: redact(accumulatedText, key),
     });
   } catch (error: any) {
-    console.error(`Error in non-streaming chat [${p}]:`, error);
+    console.error(`Error in non-streaming chat [${p}].`);
     res.status(500).json({
-      error: formatErrorMessage(error),
+      error: formatErrorMessage(error, key),
     });
   }
 });
 
-async function startServer() {
+export async function startServer() {
+  let vite;
   if (process.env.NODE_ENV !== 'production') {
     const { createServer } = await import('vite');
-    const vite = await createServer({
+    vite = await createServer({
+      root: projectRoot,
       server: {
         middlewareMode: true,
         hmr: false,
@@ -751,16 +940,34 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = path.resolve(projectRoot, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on http://0.0.0.0:${PORT}`);
-  });
+  try {
+    const server = await new Promise<Server>((resolve, reject) => {
+      const httpServer = app.listen(PORT, HOST);
+      httpServer.once('error', reject);
+      httpServer.once('listening', () => {
+        httpServer.off('error', reject);
+        console.log(`Server listening on http://${HOST}:${PORT}`);
+        resolve(httpServer);
+      });
+    });
+    return { server, vite };
+  } catch (error) {
+    await vite?.close();
+    throw error;
+  }
 }
 
-startServer();
+// Keep the CLI entry point without starting a listener when this module is imported.
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  startServer().catch((error) => {
+    console.error('Failed to start server:', error);
+    process.exitCode = 1;
+  });
+}

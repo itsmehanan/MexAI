@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hanex &amp; Shumex island</title>
+<link rel="stylesheet" href="characters.css">
+<link rel="stylesheet" href="island.css">
+</head>
+<body>
+<div id="island" class="island resting" tabindex="0" aria-label="Hanex and Shumex island">
+  <div class="faces" data-expression="sleeping" aria-hidden="true">
+    <span class="character character--hanex"><span class="character-detail"></span><span class="character-body"><span class="character-eyes"><i class="character-eye"></i><i class="character-eye"></i></span><span class="character-cheek character-cheek--left"></span><span class="character-cheek character-cheek--right"></span><span class="character-mouth"></span></span><span class="character-thoughts"><i></i><i></i><i></i></span></span>
+    <span class="character character--shumex"><span class="character-detail"></span><span class="character-body"><span class="character-eyes"><i class="character-eye"></i><i class="character-eye"></i></span><span class="character-cheek character-cheek--left"></span><span class="character-cheek character-cheek--right"></span><span class="character-mouth"></span></span><span class="character-thoughts"><i></i><i></i><i></i></span></span>
+  </div>
+  <div class="state-content listening-content"><span>Listening</span><span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span></div>
+  <div class="state-content working-content"><div class="working-label"><span>Working</span><span>Preparing your response…</span></div><div class="progress"><span></span></div></div>
+  <div class="state-content browser-content"><strong>Agent is controlling the browser</strong><button id="browser-stop" type="button">Stop</button></div>
+  <div class="state-content command-content">
+    <div class="command-heading"><span id="result-label">Quick command</span><button id="open-chat" type="button">Open chat ↗</button></div>
+    <div id="result-preview" class="result-preview" aria-live="polite">Ask Hanex or Shumex anything.</div>
+    <form id="command-form" class="command-form">
+      <select id="agent-select" aria-label="Choose agent"><option value="hanex">Hanex</option><option value="shumex">Shumex</option></select>
+      <input id="command-input" aria-label="Command" placeholder="Type a command…" autocomplete="off" maxlength="10000">
+      <button id="mic" type="button" aria-label="Dictate a command" title="Dictate a command">🎙</button>
+      <button type="submit" aria-label="Send command">↵</button>
+    </form>
+  </div>
+  <div class="state-content update-content"><span>Update ready. Restart to install</span><button id="restart-update" type="button">Restart</button></div>
+  <div class="state-content approval-content"><div class="approval-title"><strong id="approval-title">Needs approval</strong><button id="approval-open" type="button">Open chat ↗</button></div><pre id="approval-details">Allow this demo action?</pre><div class="approval-actions"><button id="approve" type="button">Approve</button><button id="deny" type="button">Deny</button><button id="browser-stop-approval" type="button" hidden>Stop browser</button><button id="always" type="button">Always allow this kind of action in this folder</button></div></div>
+</div>
+<script src="voice-recorder.js"></script>
+<script src="island.js"></script>
+</body>
+</html>
